@@ -496,8 +496,24 @@ void MainWindow::setupStatusBar()
     mHvModeAction->setToolTip(tr("On: x64dbg debugs through turing-hv and opens no handle to any other process.\n"
                                  "Off: the standard Windows debugger (this session only). Not while debugging."));
     ui->menuOptions->insertAction(ui->actionSettings, mHvModeAction);
+    // 2026-11-04: what the hypervisor can't do invisibly, through Windows -- off unless the user turns it on
+    mHvWindowsAction = new QAction(tr("HV Mode: allow visible Windows actions (pause, suspend / kill threads, allocate, patch code)"), this);
+    mHvWindowsAction->setCheckable(true);
+    mHvWindowsAction->setToolTip(tr("Off (default): HV Mode refuses what the hypervisor can't do invisibly.\n"
+                                    "On: those go through Windows with a handle on the target -- it can see the handle and the action.\n"
+                                    "Each one is logged. Command: hvwindows on|off."));
+    {
+        duint allow = 0;
+        BridgeSettingGetUint("Engine", "HvAllowWindows", &allow);
+        mHvWindowsAction->setChecked(allow != 0);
+    }
+    ui->menuOptions->insertAction(ui->actionSettings, mHvWindowsAction);
     ui->menuOptions->insertSeparator(ui->actionSettings);
     connect(mHvModeAction, SIGNAL(triggered(bool)), this, SLOT(toggleHvMode(bool)));
+    connect(mHvWindowsAction, &QAction::triggered, this, [this](bool on)
+    {
+        DbgCmdExec(on ? "hvwindows on" : "hvwindows off");
+    });
 }
 
 void MainWindow::setHvModeIndicator(bool on)

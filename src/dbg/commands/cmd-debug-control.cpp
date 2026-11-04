@@ -420,9 +420,20 @@ bool cbDebugPause(int argc, char* argv[])
     }
     if(hvmodeActive())
     {
-        // stock pause suspends a thread, plants an int3, posts WM_NULL and may inject a break-in thread: all visible
-        dputs_untranslated("HV Mode: Pause is not available yet (stopping a running thread needs the hypervisor's whole-process park). "
-                           "Set a breakpoint where you want to stop.");
+        // stock pause suspends a thread, plants an int3, posts WM_NULL and may inject a break-in thread: all visible.
+        // 2026-11-04: with "allow visible Windows actions" on, the game is frozen through Windows instead
+        if(hvmodeAllowWindows())
+        {
+            if(dbgpausethroughwindows())
+            {
+                dputs_untranslated("HV Mode: freezing the target through Windows (allowed; the target can see this)...");
+                return true;
+            }
+            dputs_untranslated("HV Mode: the pause through Windows could not start (no thread to report it on yet).");
+            return false;
+        }
+        dputs_untranslated("HV Mode: Pause freezes the target through Windows, which it can see -- turn on \"allow visible Windows actions\" "
+                           "(Options menu, or the command hvwindows on) to use it. Or set a breakpoint where you want to stop.");
         return false;
     }
     // If the previous pause request could not break the debuggee and no debug

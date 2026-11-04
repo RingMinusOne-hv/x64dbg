@@ -17,4 +17,9 @@ namespace hvguard
     bool Take(TT_REFUSAL* out);     // oldest first; false when empty
     uint32_t Dropped();             // refusals lost because the queue was full (still refused, only not reported)
     DWORD OwnerOfThread(DWORD tid); // the process a thread belongs to, from the system's process list (no handle)
+    // 2026-11-04: "allow visible Windows actions" (TT_SetAllowWindows, default off): a REAL handle for one action the
+    // user allowed, opened past the hooks -- only TitanTuring's own code calls these, and only when that switch is on.
+    // Every other open in x64dbg's process (its core, the GUI, plugins, dbghelp) is still refused by the hooks.
+    HANDLE OpenProcessForAction(DWORD pid, ACCESS_MASK access);
+    HANDLE OpenThreadForAction(DWORD tid, ACCESS_MASK access);
 }

@@ -82,6 +82,7 @@ DWORD dbggetattachmainthread();
 void dbgclearattachmainthread();
 duint dbggetdbgeventcount();
 bool dbgspawnbreakinthread();
+bool dbgpausethroughwindows();   // HV Mode, "allow visible Windows actions" on: freeze through Windows, report a pause
 void dbgsetresumetid(duint tid);
 void DebugUpdateGui(duint disasm_addr, bool stack);
 void DebugUpdateGuiAsync(duint disasm_addr, bool stack);

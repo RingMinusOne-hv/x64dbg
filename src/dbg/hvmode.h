@@ -15,3 +15,9 @@ std::string hvmodeTitle(const char* title);              // "[HV Mode] " + title
 // the attach list without opening any process (system process list + image path by pid)
 bool hvmodeListProcesses(std::vector<PROCESSENTRY32>* infoList, std::vector<std::string>* commandList, std::vector<std::string>* winTextList);
 bool cbHvMode(int argc, char* argv[]);                  // the `hvmode [on|off]` command
+// 2026-11-04: "allow visible Windows actions" ([Engine] HvAllowWindows, default 0; command `hvwindows [on|off]`; the
+// Options menu). On: what the hypervisor can't do goes to Windows (the target can see it) -- see TitanTuring.h.
+bool hvmodeAllowWindows();
+bool cbHvWindows(int argc, char* argv[]);
+bool hvmodePauseChoose(DWORD* tid);                     // the thread a Windows pause will be reported on
+bool hvmodePauseRequest(DWORD tid);

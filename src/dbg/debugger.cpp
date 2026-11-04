@@ -409,6 +409,30 @@ bool dbgspawnbreakinthread()
     return true;
 }
 
+// HV Mode (2026-11-04): no break-in thread -- its int3 would reach the game with no Windows debugger to catch it. With
+// "allow visible Windows actions" on, TitanTuring freezes the game through Windows and reports EXCEPTION_BREAKPOINT on
+// one of its threads; cbException's break-in branch takes that as the pause (and blocks until Run, which resumes it).
+bool dbgpausethroughwindows()
+{
+    if(bBreakInExpected.exchange(true))
+        return true;
+    DWORD tid = 0;
+    if(!hvmodePauseChoose(&tid))
+    {
+        bBreakInExpected = false;
+        return false;
+    }
+    breakInThreadStartAddress = 0;
+    dwBreakInThreadId = tid;
+    if(!hvmodePauseRequest(tid))
+    {
+        bBreakInExpected = false;
+        dwBreakInThreadId = 0;
+        return false;
+    }
+    return true;
+}
+
 void dbgsetresumetid(duint tid)
 {
     tidToResume = tid;

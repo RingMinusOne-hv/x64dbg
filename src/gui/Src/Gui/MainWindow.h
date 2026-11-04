@@ -183,6 +183,7 @@ private:
     // HV Mode (x64dbg-turing): followed from the [HV Mode] / [HV Mode OFF] title prefix x64dbg.dll sets
     QLabel* mHvModeLabel = nullptr;
     QAction* mHvModeAction = nullptr;
+    QAction* mHvWindowsAction = nullptr;    // 2026-11-04: "allow visible Windows actions" ([Engine] HvAllowWindows)
     bool mHvModeKnown = false;
     bool mHvModeOn = false;
     void setHvModeIndicator(bool on);

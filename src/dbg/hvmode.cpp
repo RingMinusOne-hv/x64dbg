@@ -52,6 +52,10 @@ namespace
     decltype(&TT_TakeRefusal) pTake = nullptr;
     decltype(&TT_RefusalsDropped) pDropped = nullptr;
     decltype(&TT_ProcessImagePath) pImagePath = nullptr;
+    decltype(&TT_SetAllowWindows) pSetAllow = nullptr;
+    decltype(&TT_AllowWindows) pAllow = nullptr;
+    decltype(&TT_PauseChooseThread) pPauseChoose = nullptr;
+    decltype(&TT_PauseRequest) pPauseRequest = nullptr;
 
     std::wstring programDir()
     {
@@ -78,6 +82,10 @@ namespace
         GETFN(pTake, "TT_TakeRefusal")
         GETFN(pDropped, "TT_RefusalsDropped")
         GETFN(pImagePath, "TT_ProcessImagePath")
+        GETFN(pSetAllow, "TT_SetAllowWindows")
+        GETFN(pAllow, "TT_AllowWindows")
+        GETFN(pPauseChoose, "TT_PauseChooseThread")
+        GETFN(pPauseRequest, "TT_PauseRequest")
 #undef GETFN
         gEngine = m;
         return true;
@@ -109,9 +117,35 @@ namespace
 
     // every refusal is logged (log window + <user dir>\hvmode.log) and shown in the status bar -- never a modal box: a
     // background refusal must not block x64dbg (one did, holding up its close)
+    void appendLog(const std::string & text)
+    {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        const std::wstring logPath = StringUtils::Utf8ToUtf16(szUserDir) + L"\\hvmode.log";
+        HANDLE f = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if(f != INVALID_HANDLE_VALUE)
+        {
+            const std::string line = StringUtils::sprintf("%04u-%02u-%02u %02u:%02u:%02u  %s\r\n", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, text.c_str());
+            DWORD written = 0;
+            WriteFile(f, line.data(), DWORD(line.size()), &written, nullptr);
+            CloseHandle(f);
+        }
+    }
+
     void report(const TT_REFUSAL & r, std::set<std::string> & warned)
     {
         const std::string who = moduleOf(r.caller);
+        if(r.kind == TT_WINDOWS_ACTION)
+        {
+            // 2026-11-04: allowed by the user ("allow visible Windows actions") -- done, through Windows
+            const std::string text = StringUtils::sprintf("HV Mode did through Windows (allowed; the target can see it): %s (process %s, pid %u%s)",
+                                     r.what, processName(r.pid).c_str(), r.pid, r.tid ? StringUtils::sprintf(", thread %u", r.tid).c_str() : "");
+            dprintf_untranslated("[HV Mode] %s\n", text.c_str());
+            appendLog(text);
+            if(warned.insert(std::string("w:") + r.what).second)
+                GuiAddStatusBarMessage(("[HV Mode] through Windows: " + std::string(r.what) + "\n").c_str());
+            return;
+        }
         std::string what, key;
         switch(r.kind)
         {
@@ -182,6 +216,14 @@ namespace
             return false;
         }
         gActive = true;
+        {
+            duint allow = 0;            // default OFF
+            BridgeSettingGetUint("Engine", "HvAllowWindows", &allow);
+            pSetAllow(allow != 0);
+            if(allow)
+                dputs_untranslated("[HV Mode] \"Allow visible Windows actions\" is ON: pause, suspend / kill threads, allocate memory, "
+                                   "code patches and other threads' registers go through Windows -- the target can see them. hvwindows off to stop.");
+        }
         if(!gWatcher)
             gWatcher = CreateThread(nullptr, 0, watcherThread, nullptr, 0, nullptr);
         return true;
@@ -310,6 +352,55 @@ bool hvmodeListProcesses(std::vector<PROCESSENTRY32>* infoList, std::vector<std:
         commandList->push_back("");                           // command lines live in each process's memory: not read
     }
     while(Process32Next(snap, &pe32));
+    return true;
+}
+
+bool hvmodeAllowWindows()
+{
+    return gActive && pAllow && pAllow();
+}
+
+bool hvmodePauseChoose(DWORD* tid)
+{
+    if(!hvmodeAllowWindows() || !pPauseChoose || !tid)
+        return false;
+    *tid = pPauseChoose();
+    return *tid != 0;
+}
+
+bool hvmodePauseRequest(DWORD tid)
+{
+    return hvmodeAllowWindows() && pPauseRequest && pPauseRequest(tid);
+}
+
+bool cbHvWindows(int argc, char* argv[])
+{
+    duint cur = 0;
+    BridgeSettingGetUint("Engine", "HvAllowWindows", &cur);
+    if(argc < 2)
+    {
+        dprintf_untranslated("Allow visible Windows actions (HV Mode): %s. Usage: hvwindows [on|off]\n", cur ? "ON" : "OFF");
+        return true;
+    }
+    const std::string a = StringUtils::ToLower(argv[1]);
+    bool on;
+    if(a == "on" || a == "1")
+        on = true;
+    else if(a == "off" || a == "0")
+        on = false;
+    else
+    {
+        dputs_untranslated("Usage: hvwindows [on|off]");
+        return false;
+    }
+    BridgeSettingSetUint("Engine", "HvAllowWindows", on ? 1 : 0);
+    BridgeSettingFlush();
+    if(pSetAllow)
+        pSetAllow(on);
+    dprintf_untranslated(on ? "Allow visible Windows actions: ON. In HV Mode, what the hypervisor can't do now goes through Windows "
+                              "(pause, suspend / resume / kill threads, allocate / free / protect memory, create threads, code patches, "
+                              "other threads' registers) -- the target can see each of these. Each is logged.\n"
+                            : "Allow visible Windows actions: OFF. HV Mode refuses what the hypervisor can't do invisibly.\n");
     return true;
 }
 

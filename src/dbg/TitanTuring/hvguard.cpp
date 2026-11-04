@@ -244,6 +244,32 @@ namespace
 
 namespace hvguard
 {
+    HANDLE OpenProcessForAction(DWORD pid, ACCESS_MASK access)
+    {
+        static NtOpen_t direct = reinterpret_cast<NtOpen_t>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtOpenProcess"));
+        const NtOpen_t f = realOpenProcess ? realOpenProcess : direct;
+        if(!f || !pid) return nullptr;
+        OBJECT_ATTRIBUTES oa;
+        memset(&oa, 0, sizeof(oa));
+        oa.Length = sizeof(oa);
+        CLIENT_ID cid = {reinterpret_cast<HANDLE>(ULONG_PTR(pid)), nullptr};
+        HANDLE h = nullptr;
+        return f(&h, access, &oa, &cid) >= 0 ? h : nullptr;
+    }
+
+    HANDLE OpenThreadForAction(DWORD tid, ACCESS_MASK access)
+    {
+        static NtOpen_t direct = reinterpret_cast<NtOpen_t>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtOpenThread"));
+        const NtOpen_t f = realOpenThread ? realOpenThread : direct;
+        if(!f || !tid) return nullptr;
+        OBJECT_ATTRIBUTES oa;
+        memset(&oa, 0, sizeof(oa));
+        oa.Length = sizeof(oa);
+        CLIENT_ID cid = {nullptr, reinterpret_cast<HANDLE>(ULONG_PTR(tid))};
+        HANDLE h = nullptr;
+        return f(&h, access, &oa, &cid) >= 0 ? h : nullptr;
+    }
+
     bool Installed() { return g_installed.load(); }
     void SetActive(bool on) { g_active.store(on && g_installed.load(), std::memory_order_release); }
     bool Active() { return g_active.load(std::memory_order_acquire); }

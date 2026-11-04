@@ -25,6 +25,7 @@ enum TT_REFUSAL_KIND
     TT_REFUSE_OPEN_THREAD = 2,      // NtOpenThread on a thread of another process
     TT_REFUSE_NEXT_PROCESS = 3,     // NtGetNextProcess (walks every process, returning a handle to each)
     TT_REFUSE_SHIM = 4,             // the Win32 shim refused an operation on the target (text in `what`)
+    TT_WINDOWS_ACTION = 5,          // 2026-11-04: done through Windows because the user allowed it (text in `what`)
 };
 typedef struct TT_REFUSAL
 {
@@ -45,6 +46,18 @@ TT_API bool TT_HvModeActive();
 TT_API bool TT_TakeRefusal(TT_REFUSAL* out);            // oldest first; false when none
 TT_API DWORD TT_RefusalsDropped();                      // refused but not reported (queue was full)
 TT_API int TT_RouteModule(HMODULE m);                   // route one more module's imports (e.g. loaded later)
+// 2026-11-04: "allow visible Windows actions" -- x64dbg's [Engine] HvAllowWindows (command `hvwindows`), default OFF.
+// On: what the hypervisor can't do -- allocate / free / protect memory, create a thread, kill a thread or the process,
+// suspend / resume a thread, write a read-only page, other threads' registers, pause -- goes to Windows with a real
+// handle opened for that one call (the target can see the handle and the action). Each is logged (TT_WINDOWS_ACTION).
+TT_API void TT_SetAllowWindows(bool on);
+TT_API bool TT_AllowWindows();
+// Pause through Windows (allowed only): the thread the pause will be reported on (the main thread; 0 = none), then
+// the request -- the engine suspends the process (NtSuspendProcess) and reports EXCEPTION_BREAKPOINT on `tid`; when
+// x64dbg's handler returns (Run), it resumes the process. Registers come from Windows while paused.
+TT_API DWORD TT_PauseChooseThread();
+TT_API bool TT_PauseRequest(DWORD tid);
+TT_API bool TT_PausedByWindows();
 
 // ---- the target, answered by the hypervisor ----
 TT_API bool TT_IsTargetProcess(HANDLE h);      // one of our process pseudo-handles (any pid)

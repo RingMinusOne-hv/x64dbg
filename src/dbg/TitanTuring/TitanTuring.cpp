@@ -789,6 +789,94 @@ namespace
     }
 }
 
+// ================================================================ 2026-11-04: "allow visible Windows actions"
+namespace
+{
+    std::atomic<bool> g_allowWindows{false};
+    std::atomic<DWORD> g_pauseReq{0};
+    bool g_paused = false;                      // frozen through Windows, reported to x64dbg as a pause (g_lock)
+    DWORD g_pauseTid = 0;
+
+    bool winContext(DWORD tid, CONTEXT& c)
+    {
+        HANDLE th = hvguard::OpenThreadForAction(tid, THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION);
+        if(!th) return false;
+        memset(&c, 0, sizeof(c));
+        c.ContextFlags = CONTEXT_FULL | CONTEXT_FLOATING_POINT;
+        const bool ok = GetThreadContext(th, &c) != FALSE;
+        CloseHandle(th);
+        return ok;
+    }
+
+    bool winSetContext(DWORD tid, const CONTEXT& c)
+    {
+        HANDLE th = hvguard::OpenThreadForAction(tid, THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION);
+        if(!th) return false;
+        const bool ok = SetThreadContext(th, &c) != FALSE;
+        CloseHandle(th);
+        return ok;
+    }
+
+    void ctxFromWin(const CONTEXT& w, TITAN_ENGINE_CONTEXT_t* c)
+    {
+        memset(c, 0, sizeof(*c));
+        c->cax = w.Rax; c->ccx = w.Rcx; c->cdx = w.Rdx; c->cbx = w.Rbx; c->csp = w.Rsp; c->cbp = w.Rbp; c->csi = w.Rsi; c->cdi = w.Rdi;
+        c->r8 = w.R8; c->r9 = w.R9; c->r10 = w.R10; c->r11 = w.R11; c->r12 = w.R12; c->r13 = w.R13; c->r14 = w.R14; c->r15 = w.R15;
+        c->cip = w.Rip;
+        c->eflags = w.EFlags;
+        c->cs = w.SegCs; c->ss = w.SegSs; c->ds = w.SegDs; c->es = w.SegEs; c->fs = w.SegFs; c->gs = w.SegGs;
+        c->x87fpu.ControlWord = w.FltSave.ControlWord;
+        c->x87fpu.StatusWord = w.FltSave.StatusWord;
+        c->x87fpu.TagWord = w.FltSave.TagWord;
+        c->MxCsr = w.MxCsr;
+        const int nx = int(sizeof(c->XmmRegisters) / sizeof(c->XmmRegisters[0]));
+        for(int i = 0; i < nx && i < 16; i++) memcpy(&c->XmmRegisters[i], &(&w.Xmm0)[i], 16);
+    }
+
+    // a thread's registers come from Windows: every thread while frozen through Windows; with the switch on, every
+    // thread not held at a hypervisor breakpoint (x64dbg suspends one -- through Windows, allowed -- before it reads)
+    bool useWindowsCtx(HANDLE h)
+    {
+        if(!isThreadPH(h)) return false;
+        return g_paused || (g_allowWindows.load() && !isStopped(h));
+    }
+
+    // Pause, frozen through Windows. x64dbg's handler (cbException, the break-in branch) blocks until Run.
+    void pauseThroughWindows(DWORD tid)
+    {
+        typedef NTSTATUS(NTAPI* NtProc_t)(HANDLE);
+        static NtProc_t ntSuspend = reinterpret_cast<NtProc_t>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSuspendProcess"));
+        static NtProc_t ntResume = reinterpret_cast<NtProc_t>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtResumeProcess"));
+        HANDLE p = hvguard::OpenProcessForAction(g_t.pid, PROCESS_SUSPEND_RESUME);
+        if(!p || !ntSuspend || !ntResume || ntSuspend(p) < 0)
+        {
+            if(p) CloseHandle(p);
+            hvguard::Record(TT_REFUSE_SHIM, g_t.pid, tid, PROCESS_SUSPEND_RESUME, 0, "pause the target through Windows (Windows refused)");
+            return;
+        }
+        hvguard::Record(TT_WINDOWS_ACTION, g_t.pid, tid, PROCESS_SUSPEND_RESUME, 0, "pause the target (NtSuspendProcess)");
+        CONTEXT w;
+        const bool have = winContext(tid, w);
+        {
+            std::lock_guard<std::recursive_mutex> g(g_lock);
+            g_paused = true;
+            g_pauseTid = tid;
+            setEvent(EXCEPTION_DEBUG_EVENT, tid);
+            g_ev.u.Exception.dwFirstChance = TRUE;
+            g_ev.u.Exception.ExceptionRecord.ExceptionCode = EXCEPTION_BREAKPOINT;
+            g_ev.u.Exception.ExceptionRecord.ExceptionAddress = reinterpret_cast<PVOID>(uintptr_t(have ? w.Rip : 0));
+        }
+        fire(UE_CH_UNHANDLEDEXCEPTION, &g_ev.u.Exception);
+        {
+            std::lock_guard<std::recursive_mutex> g(g_lock);
+            g_paused = false;
+            g_pauseTid = 0;
+        }
+        ntResume(p);
+        CloseHandle(p);
+    }
+}
+
 // ================================================================================================== the exports
 
 extern "C" {
@@ -937,6 +1025,12 @@ __declspec(dllexport) bool GetFullContextDataEx(HANDLE hActiveThread, TITAN_ENGI
 {
     std::lock_guard<std::recursive_mutex> g(g_lock);
     if(!titcontext) return false;
+    if(useWindowsCtx(hActiveThread))
+    {
+        CONTEXT w;
+        if(winContext(threadOf(hActiveThread), w)) { ctxFromWin(w, titcontext); return true; }
+        if(g_paused) { memset(titcontext, 0, sizeof(*titcontext)); return false; }
+    }
     if(!isStopped(hActiveThread))
     {
         TrapCtx t;
@@ -955,6 +1049,20 @@ __declspec(dllexport) bool GetFullContextDataEx(HANDLE hActiveThread, TITAN_ENGI
 __declspec(dllexport) bool SetFullContextDataEx(HANDLE hActiveThread, TITAN_ENGINE_CONTEXT_t* titcontext)
 {
     std::lock_guard<std::recursive_mutex> g(g_lock);
+    if(titcontext && g_paused && isThreadPH(hActiveThread))
+    {
+        // frozen through Windows: the general registers, RIP and the flags go back through Windows
+        CONTEXT w;
+        if(!winContext(threadOf(hActiveThread), w)) return false;
+        w.Rax = titcontext->cax; w.Rcx = titcontext->ccx; w.Rdx = titcontext->cdx; w.Rbx = titcontext->cbx;
+        w.Rsp = titcontext->csp; w.Rbp = titcontext->cbp; w.Rsi = titcontext->csi; w.Rdi = titcontext->cdi;
+        w.R8 = titcontext->r8; w.R9 = titcontext->r9; w.R10 = titcontext->r10; w.R11 = titcontext->r11;
+        w.R12 = titcontext->r12; w.R13 = titcontext->r13; w.R14 = titcontext->r14; w.R15 = titcontext->r15;
+        w.Rip = titcontext->cip;
+        w.EFlags = DWORD(titcontext->eflags);
+        w.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        return winSetContext(threadOf(hActiveThread), w);
+    }
     if(!titcontext || !isStopped(hActiveThread)) return false;
     TITAN_ENGINE_CONTEXT_t cur;
     ctxFromSnapshot(g_ctx, &cur);
@@ -987,6 +1095,28 @@ __declspec(dllexport) bool SetFullContextDataEx(HANDLE hActiveThread, TITAN_ENGI
 __declspec(dllexport) ULONG_PTR GetContextDataEx(HANDLE hActiveThread, TitanRegister IndexOfRegister)
 {
     std::lock_guard<std::recursive_mutex> g(g_lock);
+    if(useWindowsCtx(hActiveThread))
+    {
+        CONTEXT w;
+        if(winContext(threadOf(hActiveThread), w))
+        {
+            const int wi = gprOf(IndexOfRegister);
+            if(wi >= 0) return ULONG_PTR((&w.Rax)[wi]);
+            switch(IndexOfRegister)
+            {
+            case UE_EIP: case UE_RIP: case UE_CIP: return ULONG_PTR(w.Rip);
+            case UE_EFLAGS: case UE_RFLAGS: return ULONG_PTR(w.EFlags);
+            case UE_SEG_GS: return w.SegGs;
+            case UE_SEG_FS: return w.SegFs;
+            case UE_SEG_ES: return w.SegEs;
+            case UE_SEG_DS: return w.SegDs;
+            case UE_SEG_CS: return w.SegCs;
+            case UE_SEG_SS: return w.SegSs;
+            default: return 0;
+            }
+        }
+        if(g_paused) return 0;
+    }
     if(!isStopped(hActiveThread))
     {
         TrapCtx t;
@@ -1025,6 +1155,18 @@ __declspec(dllexport) ULONG_PTR GetContextDataEx(HANDLE hActiveThread, TitanRegi
 __declspec(dllexport) bool SetContextDataEx(HANDLE hActiveThread, TitanRegister IndexOfRegister, ULONG_PTR NewRegisterValue)
 {
     std::lock_guard<std::recursive_mutex> g(g_lock);
+    if(g_paused && isThreadPH(hActiveThread))
+    {
+        CONTEXT w;
+        if(!winContext(threadOf(hActiveThread), w)) return false;
+        const int wi = gprOf(IndexOfRegister);
+        if(wi >= 0) (&w.Rax)[wi] = NewRegisterValue;
+        else if(IndexOfRegister == UE_EIP || IndexOfRegister == UE_RIP || IndexOfRegister == UE_CIP) w.Rip = NewRegisterValue;
+        else if(IndexOfRegister == UE_EFLAGS || IndexOfRegister == UE_RFLAGS) w.EFlags = DWORD(NewRegisterValue);
+        else return false;
+        w.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        return winSetContext(threadOf(hActiveThread), w);
+    }
     if(!isStopped(hActiveThread)) return false;
     thv_break_cmd c = {};
     c.tid = g_stoppedTid;
@@ -1091,6 +1233,12 @@ static unsigned indirectCallLen(const uint8_t* b, unsigned n, bool mode64)
 static void issueStep(TITANCBSTEP cb, uint32_t cmd)
 {
     std::lock_guard<std::recursive_mutex> g(g_lock);
+    if(g_paused)
+    {
+        hvguard::Record(TT_REFUSE_SHIM, g_t.pid, g_pauseTid, 0, 0,
+                        "step from a Windows pause (only a thread held at a breakpoint steps; Run continues)");
+        return;
+    }
     if(!g_ctxValid || !g_stoppedHv) return;    // no stopped thread to step
     thv_break_cmd c = {};
     c.tid = g_stoppedTid;
@@ -1209,6 +1357,12 @@ __declspec(dllexport) void DebugLoop()
             setEvent(EXIT_PROCESS_DEBUG_EVENT, 0);
             fire(UE_CH_EXITPROCESS, &g_ev.u.ExitProcess);
             break;
+        }
+        if(const DWORD ptid = g_pauseReq.exchange(0))
+        {
+            if(g_allowWindows.load()) pauseThroughWindows(ptid);   // blocks until x64dbg's Run
+            if(g_stop) break;
+            continue;
         }
         pollBreakpoints();          // x64dbg's breakpoint callbacks run without g_lock (they wait for the user)
         if(g_stop) break;
@@ -1386,6 +1540,26 @@ __declspec(dllexport) bool EngineCheckStructAlignment(TitanStructureType Structu
 }
 
 // ---- TitanTuring extras (the Win32 shim and the harness use these) ----
+__declspec(dllexport) void TT_SetAllowWindows(bool on) { g_allowWindows.store(on); }
+__declspec(dllexport) bool TT_AllowWindows() { return g_allowWindows.load(); }
+__declspec(dllexport) bool TT_PausedByWindows() { std::lock_guard<std::recursive_mutex> g(g_lock); return g_paused; }
+__declspec(dllexport) DWORD TT_PauseChooseThread()
+{
+    if(!g_allowWindows.load() || !g_t.attached) return 0;
+    TT_THREAD th[64];
+    DWORD n = 0;
+    if(!TT_TargetThreads(th, 64, &n) || !n) return 0;
+    std::lock_guard<std::recursive_mutex> g(g_lock);
+    for(DWORD i = 0; i < n; i++)                 // the first the hypervisor lists (the main thread) x64dbg knows
+        if(g_threads.count(th[i].tid)) return th[i].tid;
+    return 0;
+}
+__declspec(dllexport) bool TT_PauseRequest(DWORD tid)
+{
+    if(!g_allowWindows.load() || !tid) return false;
+    DWORD zero = 0;
+    return g_pauseReq.compare_exchange_strong(zero, tid);
+}
 __declspec(dllexport) bool TT_IsTargetProcess(HANDLE h) { return isProcPH(h); }
 __declspec(dllexport) bool TT_IsTargetThread(HANDLE h) { return isThreadPH(h); }
 __declspec(dllexport) DWORD TT_TargetPid() { return g_t.pid; }

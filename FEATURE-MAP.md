@@ -37,7 +37,7 @@ code (designed below) · **[limited]** works with a documented restriction · **
 | Step into / over / out | rev149 concealed TF step; step-over = return trap; step-out = return trap on the caller's return | **[have]** (holds within the bp's page; off-page runs to the next bp) |
 | Run to selection | rev149 RUNTO | **[have]** |
 | Pause one thread | parking breakpoint (rev149) | **[have]** |
-| Pause the whole process | **mass-park**: park every user thread at once | **[new-HV]** gap 3 (below) |
+| Pause the whole process | **mass-park**: park every user thread at once | **[new-HV]** gap 3 (below); 2026-11-04: through Windows when "allow visible Windows actions" is on |
 
 ## 3. Breakpoints
 
@@ -67,7 +67,7 @@ code (designed below) · **[limited]** works with a documented restriction · **
 | Memory map | backend region enumeration (rev146 vmem_enum) | **[have]** |
 | Patch bytes / save patched file | backend write (respects guest RO; shared-code pages need the opt-in) | **[have]** |
 | Search (pattern / value / string) & references | engine reads via the backend and searches | **[engine]** |
-| Allocate / free memory in the debuggee (`VirtualAllocEx`) | the HV cannot allocate guest memory invisibly | **[out]** (or via the Windows fallback, which is visible — off by default) |
+| Allocate / free memory in the debuggee (`VirtualAllocEx`) | the HV cannot allocate guest memory invisibly | **[limited]** through Windows with "allow visible Windows actions" (off by default) |
 | Fill / scatter read-write of many addresses | backend scatter read/write | **[have]** |
 
 ## 6. Registers & flags
@@ -78,7 +78,7 @@ code (designed below) · **[limited]** works with a documented restriction · **
 | x87 / SSE (XMM, MXCSR) | the snapshot's FXSAVE | **[have]** |
 | AVX / AVX-512 (YMM/ZMM) | snapshot does XMM only today | **[new-HV]** gap 5 (XSAVE path) |
 | Debug registers (DR0-7) view | we never use DRx; shown as not-applicable / zero | **[engine]** |
-| Registers of a thread that is NOT stopped | read its switched-out kernel trap frame | **[new-HV]** gap 2 |
+| Registers of a thread that is NOT stopped | read its switched-out kernel trap frame | **[have]** (2026-11-03, trapContext; full from Windows with "allow visible Windows actions") |
 
 ## 7. Stack, call stack, SEH
 
@@ -95,8 +95,8 @@ code (designed below) · **[limited]** works with a documented restriction · **
 | Thread list | backend thread enumeration | **[have]** |
 | Suspend / resume a thread | parking hold / release | **[have]** |
 | Per-thread context (the stopped one) | snapshot + SETREG | **[have]** |
-| Per-thread context (others) | trap-frame read | **[new-HV]** gap 2 |
-| Kill a thread | would require a visible/kernel action | **[out]** |
+| Per-thread context (others) | trap-frame read | **[have]** (trapContext) |
+| Kill a thread | would require a visible/kernel action | **[limited]** through Windows with "allow visible Windows actions" (off by default) |
 
 ## 9. Modules, symbols, disassembly, analysis
 

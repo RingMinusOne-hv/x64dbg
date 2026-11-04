@@ -237,6 +237,27 @@ mostly LOOKED held and why the thread came round "as a new hold at the same addr
 cross-core time difference; a hosted test reproduces the race and fails on the rev150e source. `bp_live q<ms>` (under
 10 s) is in RUN-ALL. Still no TitanTuring change needed.
 
+## Allow visible Windows actions (2026-11-04): `hvwindows`, off by default
+
+What the hypervisor can't do invisibly is refused in HV Mode. **Options > "HV Mode: allow visible Windows actions"**
+(setting `[Engine] HvAllowWindows`, default 0; command `hvwindows on|off`) lets those go through Windows instead --
+the target can see each one (a handle on it, and the action itself), so it stays off unless you turn it on:
+
+| Action | Off (default) | On |
+|---|---|---|
+| **Pause** | refused (stock pause injects a thread whose `int3` would hit the game with no Windows debugger attached) | the engine freezes the game (`NtSuspendProcess`) and x64dbg shows it paused on the main thread, its registers read from Windows; **Run** resumes it. A step from this pause is refused with the reason (only a thread held at a breakpoint steps) |
+| Suspend / resume / kill a thread, suspend / resume all | refused | through Windows |
+| Other threads' registers | from the kernel trap frame (partial) | full, from Windows |
+| Allocate / free / protect memory, create a thread, terminate the process | refused | through Windows |
+| Write a read-only page (assemble / patch code) | refused (the hypervisor writes only writable pages) | Windows writes it (its copy-on-write) |
+
+Each handle is opened by TitanTuring for that one call, past the guard's hooks (`hvguard::Open*ForAction`), and
+closed after; the guard still refuses every other open in x64dbg's process (its core, GUI, plugins, dbghelp). Each
+action is logged: `[HV Mode] HV Mode did through Windows (allowed; the target can see it): ...` (log window,
+`hvmode.log`, status bar). Test: `tests/x64dbg_hvwindows.py` (in RUN-ALL) -- off: Pause and alloc refused; on: Pause
+freezes the target (its own writes stop), Run resumes them, alloc returns memory, each logged; the switch put back off.
+The build before 2026-11-04 fails 6 of its 10 checks.
+
 ## Native trace (2026-11-03, rev150): `HvTrace`
 
     HvTrace [address[, count[, stepover]]]      count 1..2048 (default 1000; x64dbg numbers are hex: `.300` = 300)

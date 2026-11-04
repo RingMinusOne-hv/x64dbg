@@ -95,6 +95,34 @@ namespace
     }
 #define REFUSE(pid, what) (note((pid), (what), _ReturnAddress()), SetLastError(ERROR_ACCESS_DENIED))
 
+    // 2026-11-04: "ALLOW VISIBLE WINDOWS ACTIONS" (TT_SetAllowWindows: x64dbg's [Engine] HvAllowWindows / `hvwindows`,
+    // default OFF). On, an operation the hypervisor can't do goes to Windows with a real handle opened for that one call
+    // (hvguard::Open*ForAction, past the hooks) and closed after; each is logged as done through Windows. Off: refused.
+    void did(DWORD pid, DWORD tid, const char* what, void* caller)
+    {
+        hvguard::Record(TT_WINDOWS_ACTION, pid, tid, 0, uint64_t(caller), what);
+    }
+    struct RealHandle
+    {
+        HANDLE h = nullptr;
+        ~RealHandle() { if(h) CloseHandle(h); }
+    };
+    HANDLE realProcess(DWORD pid, ACCESS_MASK access, const char* what, void* caller)
+    {
+        if(!TT_AllowWindows()) return nullptr;
+        HANDLE r = hvguard::OpenProcessForAction(pid, access);
+        if(r) did(pid, 0, what, caller);
+        else note(pid, "an allowed Windows action (Windows refused the handle)", caller);
+        return r;
+    }
+    HANDLE realThread(DWORD tid, ACCESS_MASK access, const char* what, void* caller, bool quiet = false)
+    {
+        if(!TT_AllowWindows()) return nullptr;
+        HANDLE r = hvguard::OpenThreadForAction(tid, access);
+        if(r && !quiet) did(TT_TargetPid(), tid, what, caller);
+        return r;
+    }
+
     // ---- the target's region map, as VirtualQueryEx would describe it, from the hypervisor's page-table walk ----
     struct RegionCache
     {
@@ -288,6 +316,12 @@ namespace
     {
         if(!isPH(h)) return o_WriteProcessMemory(h, a, b, n, done);
         if(MemoryWriteSafe(h, a, b, n, done)) return TRUE;
+        // a read-only page (code): the hypervisor writes only what the target's page tables let it; Windows makes the
+        // page's private copy first (allowed only)
+        RealHandle r;
+        r.h = realProcess(phPid(h), PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_LIMITED_INFORMATION,
+                          "write a read-only page of the target (code patch)", _ReturnAddress());
+        if(r.h) return o_WriteProcessMemory(r.h, a, b, n, done);
         SetLastError(ERROR_PARTIAL_COPY);
         return FALSE;
     }
@@ -330,6 +364,9 @@ namespace
     LPVOID WINAPI sh_VirtualAllocEx(HANDLE h, LPVOID a, SIZE_T n, DWORD t, DWORD p)
     {
         if(!isPH(h)) return o_VirtualAllocEx(h, a, n, t, p);
+        RealHandle r;
+        r.h = realProcess(phPid(h), PROCESS_VM_OPERATION | PROCESS_QUERY_LIMITED_INFORMATION, "allocate memory in the target", _ReturnAddress());
+        if(r.h) return o_VirtualAllocEx(r.h, a, n, t, p);
         REFUSE(phPid(h), "allocate memory in the target (it would see a new region appear)");
         return nullptr;
     }
@@ -337,6 +374,9 @@ namespace
     BOOL WINAPI sh_VirtualFreeEx(HANDLE h, LPVOID a, SIZE_T n, DWORD t)
     {
         if(!isPH(h)) return o_VirtualFreeEx(h, a, n, t);
+        RealHandle r;
+        r.h = realProcess(phPid(h), PROCESS_VM_OPERATION | PROCESS_QUERY_LIMITED_INFORMATION, "free memory in the target", _ReturnAddress());
+        if(r.h) return o_VirtualFreeEx(r.h, a, n, t);
         REFUSE(phPid(h), "free memory in the target");
         return FALSE;
     }
@@ -344,6 +384,9 @@ namespace
     BOOL WINAPI sh_VirtualProtectEx(HANDLE h, LPVOID a, SIZE_T n, DWORD p, PDWORD old)
     {
         if(!isPH(h)) return o_VirtualProtectEx(h, a, n, p, old);
+        RealHandle r;
+        r.h = realProcess(phPid(h), PROCESS_VM_OPERATION | PROCESS_QUERY_LIMITED_INFORMATION, "change a page protection in the target", _ReturnAddress());
+        if(r.h) return o_VirtualProtectEx(r.h, a, n, p, old);
         REFUSE(phPid(h), "change a page protection in the target");
         return FALSE;
     }
@@ -370,6 +413,10 @@ namespace
         // Not reported: x64dbg suspends a running thread internally to read its registers (call-stack panel, suspend
         // count) every refresh. Refused all the same -- a real suspend changes the thread's suspend count, which the
         // target can read. The user's own suspend commands explain HV Mode themselves.
+        // Allowed (2026-11-04): Windows suspends it -- not logged per call (x64dbg does this on every refresh)
+        RealHandle r;
+        r.h = realThread(tid, THREAD_SUSPEND_RESUME, "suspend a thread", _ReturnAddress(), true);
+        if(r.h) return o_SuspendThread(r.h);
         SetLastError(ERROR_ACCESS_DENIED);
         return DWORD(-1);
     }
@@ -378,6 +425,12 @@ namespace
     {
         if(!isTPH(h)) return o_ResumeThread(h);
         const DWORD tid = TT_ThreadIdOf(h);
+        if(TT_AllowWindows() && tid != TT_StoppedTid())
+        {
+            RealHandle r;
+            r.h = realThread(tid, THREAD_SUSPEND_RESUME, "resume a thread", _ReturnAddress(), true);
+            if(r.h) return o_ResumeThread(r.h);
+        }
         std::lock_guard<std::mutex> g(g_suspM);
         auto it = g_susp.find(tid);
         if(it == g_susp.end() || it->second == 0) return 0;     // never suspended by anyone through us
@@ -429,6 +482,9 @@ namespace
     BOOL WINAPI sh_TerminateThread(HANDLE h, DWORD code)
     {
         if(!isTPH(h)) return o_TerminateThread(h, code);
+        RealHandle r;
+        r.h = realThread(TT_ThreadIdOf(h), THREAD_TERMINATE, "terminate a thread of the target", _ReturnAddress());
+        if(r.h) return o_TerminateThread(r.h, code);
         REFUSE(TT_TargetPid(), "terminate a thread of the target");
         return FALSE;
     }
@@ -436,6 +492,9 @@ namespace
     BOOL WINAPI sh_TerminateProcess(HANDLE h, UINT code)
     {
         if(!isPH(h)) return o_TerminateProcess(h, code);
+        RealHandle r;
+        r.h = realProcess(phPid(h), PROCESS_TERMINATE, "terminate the target", _ReturnAddress());
+        if(r.h) return o_TerminateProcess(r.h, code);
         REFUSE(phPid(h), "terminate the target (the debugger never kills it; Stop detaches)");
         return FALSE;
     }
@@ -473,6 +532,10 @@ namespace
     HANDLE WINAPI sh_CreateRemoteThread(HANDLE h, LPSECURITY_ATTRIBUTES sa, SIZE_T st, LPTHREAD_START_ROUTINE fn, LPVOID p, DWORD f, LPDWORD tid)
     {
         if(!isPH(h)) return o_CreateRemoteThread(h, sa, st, fn, p, f, tid);
+        RealHandle r;
+        r.h = realProcess(phPid(h), PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
+                          "create a thread in the target", _ReturnAddress());
+        if(r.h) return o_CreateRemoteThread(r.h, sa, st, fn, p, f, tid);
         REFUSE(phPid(h), "create a thread in the target");
         return nullptr;
     }
@@ -481,6 +544,10 @@ namespace
                                           LPPROC_THREAD_ATTRIBUTE_LIST al, LPDWORD tid)
     {
         if(!isPH(h)) return o_CreateRemoteThreadEx(h, sa, st, fn, p, f, al, tid);
+        RealHandle r;
+        r.h = realProcess(phPid(h), PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
+                          "create a thread in the target", _ReturnAddress());
+        if(r.h) return o_CreateRemoteThreadEx(r.h, sa, st, fn, p, f, al, tid);
         REFUSE(phPid(h), "create a thread in the target");
         return nullptr;
     }

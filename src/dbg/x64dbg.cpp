@@ -154,6 +154,7 @@ static void registercommands()
     dbgcmdnew("serun,sego", cbDebugSerun, true); //run + swallow exception
     dbgcmdnew("pause", cbDebugPause, false); //pause debugger
     dbgcmdnew("hvmode", cbHvMode, false); //HV Mode: debug through the hypervisor [on|off]
+    dbgcmdnew("hvwindows", cbHvWindows, false); //HV Mode: allow visible Windows actions [on|off] (default off)
     dbgcmdnew("HvTrace,hvtrace", cbHvTrace, true); //HV Mode: the hypervisor's native trace [address[, count[, stepover]]] -> the Trace tab
     dbgcmdnew("HvTraceStop,hvtracestop", cbHvTraceStop, true); //HV Mode: end the native trace, keep what it recorded
     dbgcmdnew("DebugContinue,con", cbDebugContinue, true); //set continue status

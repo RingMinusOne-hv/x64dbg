@@ -84,9 +84,9 @@ bool cbDebugSwitchthread(int argc, char* argv[])
 
 bool cbDebugSuspendthread(int argc, char* argv[])
 {
-    if(hvmodeActive())
+    if(hvmodeActive() && !hvmodeAllowWindows())
     {
-        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Turn on \"allow visible Windows actions\" (Options menu, or hvwindows on) to do this through Windows, or leave HV Mode (hvmode off, when not debugging).");
         return false;
     }
     duint threadid = fdProcessInfo->dwThreadId;
@@ -111,9 +111,9 @@ bool cbDebugSuspendthread(int argc, char* argv[])
 
 bool cbDebugResumethread(int argc, char* argv[])
 {
-    if(hvmodeActive())
+    if(hvmodeActive() && !hvmodeAllowWindows())
     {
-        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Turn on \"allow visible Windows actions\" (Options menu, or hvwindows on) to do this through Windows, or leave HV Mode (hvmode off, when not debugging).");
         return false;
     }
     duint threadid = fdProcessInfo->dwThreadId;
@@ -138,9 +138,9 @@ bool cbDebugResumethread(int argc, char* argv[])
 
 bool cbDebugKillthread(int argc, char* argv[])
 {
-    if(hvmodeActive())
+    if(hvmodeActive() && !hvmodeAllowWindows())
     {
-        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Turn on \"allow visible Windows actions\" (Options menu, or hvwindows on) to do this through Windows, or leave HV Mode (hvmode off, when not debugging).");
         return false;
     }
     duint threadid = fdProcessInfo->dwThreadId;
@@ -169,9 +169,9 @@ bool cbDebugKillthread(int argc, char* argv[])
 
 bool cbDebugSuspendAllThreads(int argc, char* argv[])
 {
-    if(hvmodeActive())
+    if(hvmodeActive() && !hvmodeAllowWindows())
     {
-        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Turn on \"allow visible Windows actions\" (Options menu, or hvwindows on) to do this through Windows, or leave HV Mode (hvmode off, when not debugging).");
         return false;
     }
     dprintf(QT_TRANSLATE_NOOP("DBG", "%d/%d thread(s) suspended\n"), ThreadSuspendAll(), ThreadGetCount());
@@ -182,9 +182,9 @@ bool cbDebugSuspendAllThreads(int argc, char* argv[])
 
 bool cbDebugResumeAllThreads(int argc, char* argv[])
 {
-    if(hvmodeActive())
+    if(hvmodeActive() && !hvmodeAllowWindows())
     {
-        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Turn on \"allow visible Windows actions\" (Options menu, or hvwindows on) to do this through Windows, or leave HV Mode (hvmode off, when not debugging).");
         return false;
     }
     dprintf(QT_TRANSLATE_NOOP("DBG", "%d/%d thread(s) resumed\n"), ThreadResumeAll(), ThreadGetCount());
