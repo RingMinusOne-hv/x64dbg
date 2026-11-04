@@ -348,6 +348,10 @@ set(dbg_SOURCES
 	"src/dbg/handles.h"
 	"src/dbg/historycontext.cpp"
 	"src/dbg/historycontext.h"
+	"src/dbg/hvmode.cpp"
+	"src/dbg/hvmode.h"
+	"src/dbg/hvtrace.cpp"
+	"src/dbg/hvtrace.h"
 	"src/dbg/jansson/jansson.h"
 	"src/dbg/jansson/jansson_config.h"
 	"src/dbg/jansson/jansson_x64dbg.h"
@@ -505,6 +509,7 @@ endif()
 if(MSVC) # msvc
 	target_link_options(dbg PUBLIC
 		"/DELAYLOAD:TitanEngine.dll"
+		"/DELAY:UNLOAD"
 	)
 endif()
 
@@ -522,6 +527,45 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8) # x64
 	)
 endif()
 
+# Target: TitanTuring
+if(CMAKE_SIZEOF_VOID_P EQUAL 8) # x64
+	set(TitanTuring_SOURCES
+		cmake.toml
+		"src/dbg/TitanTuring/TitanTuring.cpp"
+		"src/dbg/TitanTuring/TitanTuring.h"
+		"src/dbg/TitanTuring/hvguard.cpp"
+		"src/dbg/TitanTuring/hvguard.h"
+		"src/dbg/TitanTuring/shim.cpp"
+		"src/dbg/TitanTuring/thvclient.cpp"
+		"src/dbg/TitanTuring/thvclient.h"
+		"src/dbg/TitanTuring/vendor/thvbridge_proto.h"
+		"src/dbg/TitanTuring/vendor/turinghv.h"
+	)
+
+	add_library(TitanTuring SHARED)
+
+	target_sources(TitanTuring PRIVATE ${TitanTuring_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${TitanTuring_SOURCES})
+
+	target_compile_definitions(TitanTuring PRIVATE
+		TITANTURING_BUILD
+		UNICODE
+		_UNICODE
+		NOMINMAX
+	)
+
+	if(NOT TARGET zydis_wrapper)
+		message(FATAL_ERROR "Target \"zydis_wrapper\" referenced by \"TitanTuring\" does not exist!")
+	endif()
+
+	target_link_libraries(TitanTuring PRIVATE
+		Psapi
+		user32
+		advapi32
+		zydis_wrapper
+	)
+
+endif()
 # Target: gui
 set(gui_SOURCES
 	cmake.toml
@@ -1013,6 +1057,12 @@ endif()
 if(CMAKE_SIZEOF_VOID_P EQUAL 4) # x86
 	add_dependencies(exe
 		launcher
+	)
+endif()
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 8) # x64
+	add_dependencies(exe
+		TitanTuring
 	)
 endif()
 

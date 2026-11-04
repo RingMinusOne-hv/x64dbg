@@ -189,6 +189,14 @@ BRIDGE_IMPEXP const wchar_t* BridgeInit(BRIDGE_CONFIG* config)
 
     auto titanEngineDll = []()
     {
+#ifdef _WIN64
+        // HV Mode (x64dbg-turing, src/dbg/hvmode.cpp): the hypervisor engine replaces the Windows-debugger engine, so
+        // the stock one isn't loaded at all. Default on; [Engine] HvMode=0 selects the engines below.
+        duint hvMode = 1;
+        BridgeSettingGetUint("Engine", "HvMode", &hvMode);
+        if(hvMode)
+            return L"TitanTuring.dll";
+#endif // _WIN64
         switch(DbgGetDebugEngine())
         {
         case DebugEngineGleeBug:

@@ -445,6 +445,26 @@ void CPUDisassembly::setupRightClickContextMenu()
         return true;
     });
 
+    // HV Mode (turing-hv rev150): the hypervisor's native trace from the selected instruction -> the Trace tab
+    QAction* hvTraceInto = makeDescAction(DIcon("trace"), tr("Trace from here (the thread never stops)"),
+        tr("HV Mode: the hypervisor follows the first thread to reach this instruction, one instruction at a time on any page, "
+           "and records its registers (up to 1000 instructions). The thread is never stopped and sees no debugger. "
+           "The trace opens in the Trace tab when it ends (at PUSHF / POPF / SYSCALL / INT, an interrupt, or the count)."),
+        SLOT(hvTraceIntoSlot()));
+    QAction* hvTraceOver = makeDescAction(DIcon("trace"), tr("Trace from here, stepping over calls"),
+        tr("HV Mode: as above, but a call's callee runs unrecorded (it is still followed)."), SLOT(hvTraceOverSlot()));
+    QAction* hvTraceStop = makeAction(DIcon("control-stop"), tr("Stop the hypervisor trace (keep what it recorded)"), SLOT(hvTraceStopSlot()));
+    mMenuBuilder->addMenu(makeMenu(DIcon("trace"), tr("Hypervisor trace (HV Mode)")), [ = ](QMenu * menu)
+    {
+        if(!DbgIsDebugging())
+            return false;
+        menu->addAction(hvTraceInto);
+        menu->addAction(hvTraceOver);
+        menu->addSeparator();
+        menu->addAction(hvTraceStop);
+        return true;
+    });
+
     mMenuBuilder->addSeparator();
 
     MenuBuilder* analysisMenu = new MenuBuilder(this);
@@ -2164,4 +2184,19 @@ void CPUDisassembly::downloadCurrentSymbolsSlot()
 void CPUDisassembly::traceCoverageToggleTraceRecordingSlot()
 {
     TraceBrowser::toggleTraceRecording(this);
+}
+
+void CPUDisassembly::hvTraceIntoSlot()
+{
+    DbgCmdExec(QString("HvTrace %1, .1000").arg(ToPtrString(rvaToVa(getInitialSelection()))));
+}
+
+void CPUDisassembly::hvTraceOverSlot()
+{
+    DbgCmdExec(QString("HvTrace %1, .1000, 1").arg(ToPtrString(rvaToVa(getInitialSelection()))));
+}
+
+void CPUDisassembly::hvTraceStopSlot()
+{
+    DbgCmdExec("HvTraceStop");
 }

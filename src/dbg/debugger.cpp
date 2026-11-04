@@ -6,6 +6,7 @@
 
 #include "debugger.h"
 #include "console.h"
+#include "hvmode.h"
 #include "memory.h"
 #include "threading.h"
 #include "command.h"
@@ -594,7 +595,7 @@ static void DebugUpdateTitle(duint disasm_addr, bool analyzeThreadSwitch)
     auto debugeeName = bWindowLongPath ? szDebuggeePath : szBaseFileName;
     _snprintf_s(title, _TRUNCATE, GuiTranslateText(QT_TRANSLATE_NOOP("DBG", "%s - PID: %s - %sThread: %s%s%s")), debugeeName, formatpidtid(fdProcessInfo->dwProcessId).c_str(), modtext, threadName, formatpidtid(currentThreadId).c_str(), threadswitch);
 
-    GuiUpdateWindowTitle(title);
+    GuiUpdateWindowTitle(hvmodeTitle(title).c_str());
 }
 
 void DebugUpdateGui(duint disasm_addr, bool stack)
@@ -2577,6 +2578,8 @@ bool dbggetwintext(std::vector<std::string>* winTextList, const DWORD dwProcessI
 
 bool dbglistprocesses(std::vector<PROCESSENTRY32>* infoList, std::vector<std::string>* commandList, std::vector<std::string>* winTextList)
 {
+    if(hvmodeActive()) // HV Mode: the list must not open every process on the machine
+        return hvmodeListProcesses(infoList, commandList, winTextList);
     infoList->clear();
     Handle hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if(!hProcessSnap)
@@ -3217,7 +3220,7 @@ static void debugLoopFunction(INIT_STRUCT* init)
         len--;
     if(len)
         strcpy_s(szBaseFileName, szBaseFileName + len + 1);
-    GuiUpdateWindowTitle(szBaseFileName);
+    GuiUpdateWindowTitle(hvmodeTitle(szBaseFileName).c_str());
 
     //call plugin callback
     PLUG_CB_INITDEBUG initInfo;

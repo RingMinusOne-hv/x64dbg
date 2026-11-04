@@ -1,4 +1,5 @@
 #include "database_cb_batcher.h"
+#include "hvmode.h"
 #include "ntdll/ntdll.h"
 #include "module.h"
 #include "filemap.h"
@@ -750,6 +751,11 @@ static void ReadDebugDirectory(MODINFO & Info, ULONG_PTR FileMapVA)
         cachePath += StringUtils::sprintf("%s\\%s\\%s", file.c_str(), Info.pdbSignature.c_str(), file.c_str());
         Info.pdbPaths.push_back(cachePath);
 
+        // HV Mode: for the debuggee's modules, x64dbg's own symbol cache only -- probing for a .pdb in the target's
+        // folder (or at the build path inside its image) is a file query a file-system filter can see
+        if(hvmodeActive() && Info.base)
+            return;
+
         // Debug directory full path
         const bool bAllowUncPathsInDebugDirectory = false; // TODO: create setting for this
         if(!dir.empty() && (bAllowUncPathsInDebugDirectory || !PathIsUNCW(StringUtils::Utf8ToUtf16(Info.pdbFile).c_str())))
@@ -1061,7 +1067,10 @@ std::unique_ptr<MODINFO> MODINFO::load(duint Base, duint Size, const char* FullP
         }
 
         // 2. If no file handle or mapping failed, try opening and mapping the file from disk.
-        if(!fileLoaded && MapFileW(wszFullPath.c_str(), FileMapAccess::Read, info.fileHandle, info.loadedSize, info.fileMap, info.fileMapVA))
+        //    HV Mode: never for the debuggee's modules -- x64dbg opening the target's own files is visible to a
+        //    file-system filter. The image comes from the target's memory through the hypervisor instead (step 3).
+        const bool hvMemoryOnly = hvmodeActive() && Base != 0;
+        if(!fileLoaded && !hvMemoryOnly && MapFileW(wszFullPath.c_str(), FileMapAccess::Read, info.fileHandle, info.loadedSize, info.fileMap, info.fileMapVA))
         {
             info.ownsFileHandle = true;
             fileLoaded = true;
@@ -1111,14 +1120,42 @@ std::unique_ptr<MODINFO> MODINFO::load(duint Base, duint Size, const char* FullP
             if(actualSize > 0)
             {
                 info.mappedData.resize(actualSize);
-                if(MemRead(Base, info.mappedData.data(), info.mappedData.size()))
+                bool imageRead;
+                size_t missingPages = 0;
+                if(hvMemoryOnly)
+                {
+                    // page by page: a page that isn't resident right now reads as zeros (like a dump) instead of
+                    // failing the whole module; the headers must be there
+                    bool headerRead = false;
+                    for(duint off = 0; off < actualSize; off += PAGE_SIZE)
+                    {
+                        const duint n = std::min<duint>(PAGE_SIZE, actualSize - off);
+                        const bool ok = MemRead(Base + off, info.mappedData.data() + off, n);
+                        if(off == 0)
+                            headerRead = ok;
+                        if(!ok)
+                        {
+                            memset(info.mappedData.data() + off, 0, n);
+                            missingPages++;
+                        }
+                        if(!headerRead)
+                            break;              // no headers: not a module we can describe
+                    }
+                    imageRead = headerRead;
+                }
+                else
+                    imageRead = MemRead(Base, info.mappedData.data(), info.mappedData.size());
+                if(imageRead)
                 {
                     info.isVirtual = true; // Process memory is SEC_IMAGE mapped
                     info.loadedSize = actualSize;
                     GetModuleInfo(info, (ULONG_PTR)info.mappedData.data());
                     if(const auto imageSize = HEADER_FIELD(info.headers, SizeOfImage))
                         info.size = imageSize;
-                    if(Base)
+                    if(Base && hvMemoryOnly)
+                        dprintf_untranslated("Module %s%s loaded from process memory through the hypervisor (HV Mode never opens the target's files); %zu of %zu pages not resident, read as zeros\n",
+                                             info.name, info.extension, missingPages, size_t((actualSize + PAGE_SIZE - 1) / PAGE_SIZE));
+                    else if(Base)
                         dprintf(QT_TRANSLATE_NOOP("DBG", "Module %s%s loaded from process memory (file inaccessible)\n"), info.name, info.extension);
                 }
                 else

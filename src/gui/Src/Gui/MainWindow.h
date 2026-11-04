@@ -34,6 +34,7 @@ class SimpleTraceDialog;
 class MRUList;
 class UpdateChecker;
 class TraceManager;
+class QLabel;
 
 namespace Ui
 {
@@ -79,6 +80,7 @@ public slots:
     void restartDebugging();
     void displayBreakpointWidget();
     void updateWindowTitleSlot(QString filename);
+    void toggleHvMode(bool on);
     void runSlot();
     void displayThreadsWidget();
     void displayCpuWidget();
@@ -178,6 +180,12 @@ private:
     SimpleTraceDialog* mSimpleTraceDialog;
     UpdateChecker* mUpdateChecker;
     DebugStatusLabel* mStatusLabel;
+    // HV Mode (x64dbg-turing): followed from the [HV Mode] / [HV Mode OFF] title prefix x64dbg.dll sets
+    QLabel* mHvModeLabel = nullptr;
+    QAction* mHvModeAction = nullptr;
+    bool mHvModeKnown = false;
+    bool mHvModeOn = false;
+    void setHvModeIndicator(bool on);
     LogStatusLabel* mLastLogLabel;
     QToolBar* mFavouriteToolbar;
 

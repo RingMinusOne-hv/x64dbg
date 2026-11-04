@@ -485,6 +485,44 @@ void MainWindow::setupStatusBar()
     QLabel* timeWastedLabel = new QLabel(this);
     ui->statusBar->addPermanentWidget(timeWastedLabel);
     mTimeWastedCounter = new TimeWastedCounter(this, timeWastedLabel);
+
+    // HV Mode: always visible, so which debugger is in use is never ambiguous
+    mHvModeLabel = new QLabel(this);
+    mHvModeLabel->setText(tr("HV Mode ?"));
+    mHvModeLabel->setContentsMargins(6, 0, 6, 0);
+    ui->statusBar->addPermanentWidget(mHvModeLabel);
+    mHvModeAction = new QAction(tr("HV Mode (debug through the hypervisor)"), this);
+    mHvModeAction->setCheckable(true);
+    mHvModeAction->setToolTip(tr("On: x64dbg debugs through turing-hv and opens no handle to any other process.\n"
+                                 "Off: the standard Windows debugger (this session only). Not while debugging."));
+    ui->menuOptions->insertAction(ui->actionSettings, mHvModeAction);
+    ui->menuOptions->insertSeparator(ui->actionSettings);
+    connect(mHvModeAction, SIGNAL(triggered(bool)), this, SLOT(toggleHvMode(bool)));
+}
+
+void MainWindow::setHvModeIndicator(bool on)
+{
+    mHvModeKnown = true;
+    mHvModeOn = on;
+    if(mHvModeLabel)
+    {
+        mHvModeLabel->setText(on ? tr("HV Mode") : tr("HV Mode OFF"));
+        mHvModeLabel->setStyleSheet(on ? "QLabel { background-color: #1e7b34; color: white; font-weight: bold; }"
+                                       : "QLabel { background-color: #b3261e; color: white; font-weight: bold; }");
+        mHvModeLabel->setToolTip(on ? tr("Debugging through the hypervisor: no handle on any other process, no Windows debugger.")
+                                    : tr("The standard Windows debugger: it opens processes and attaches the Windows debugger."));
+    }
+    if(mHvModeAction)
+        mHvModeAction->setChecked(on);
+}
+
+void MainWindow::toggleHvMode(bool on)
+{
+    // the checkbox shows the real state until x64dbg.dll confirms the switch (by retitling); a refused switch
+    // (e.g. while debugging) leaves it unchanged and says why in the log
+    if(mHvModeAction)
+        mHvModeAction->setChecked(mHvModeOn);
+    DbgCmdExec(on ? "hvmode on" : "hvmode off");
 }
 
 void MainWindow::setupLanguagesMenu()
@@ -1440,6 +1478,14 @@ bool MainWindow::nativeEvent(const QByteArray & eventType, void* message, long* 
 
 void MainWindow::updateWindowTitleSlot(QString filename)
 {
+    // HV Mode: x64dbg.dll prefixes its titles; titles set without the prefix (the "stopped" one) keep the last badge
+    if(filename.startsWith("[HV Mode OFF]"))
+        setHvModeIndicator(false);
+    else if(filename.startsWith("[HV Mode]"))
+        setHvModeIndicator(true);
+    else if(mHvModeKnown)
+        filename = filename.isEmpty() ? QString(mHvModeOn ? "[HV Mode]" : "[HV Mode OFF]")
+                                      : QString(mHvModeOn ? "[HV Mode] " : "[HV Mode OFF] ") + filename;
     if(filename.length())
     {
         setWindowTitle(filename + QString(" - ") + mWindowMainTitle);

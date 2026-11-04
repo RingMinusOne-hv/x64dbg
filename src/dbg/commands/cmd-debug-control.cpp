@@ -3,6 +3,7 @@
 #include "console.h"
 #include "debugger.h"
 #include "animate.h"
+#include "hvmode.h"
 #include "historycontext.h"
 #include "threading.h"
 #include "memory.h"
@@ -231,7 +232,8 @@ bool cbDebugStop(int argc, char* argv[])
                     return false;
                 }
             }
-            if(TimeElapsed >= 300)
+            // HV Mode: Stop is a detach -- the target is never killed (the shim would refuse and warn mid-shutdown)
+            if(TimeElapsed >= 300 && !hvmodeActive())
                 TerminateProcess(fdProcessInfo->hProcess, -1);
         }
         break;
@@ -414,6 +416,13 @@ bool cbDebugPause(int argc, char* argv[])
     if(!dbgisrunning())
     {
         dputs(QT_TRANSLATE_NOOP("DBG", "Program is not running"));
+        return false;
+    }
+    if(hvmodeActive())
+    {
+        // stock pause suspends a thread, plants an int3, posts WM_NULL and may inject a break-in thread: all visible
+        dputs_untranslated("HV Mode: Pause is not available yet (stopping a running thread needs the hypervisor's whole-process park). "
+                           "Set a breakpoint where you want to stop.");
         return false;
     }
     // If the previous pause request could not break the debuggee and no debug

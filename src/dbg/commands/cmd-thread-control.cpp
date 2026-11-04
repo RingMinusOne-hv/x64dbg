@@ -7,6 +7,7 @@
 #include "label.h"
 #include "historycontext.h"
 #include "thread.h"
+#include "hvmode.h"
 
 bool cbDebugCreatethread(int argc, char* argv[])
 {
@@ -83,6 +84,11 @@ bool cbDebugSwitchthread(int argc, char* argv[])
 
 bool cbDebugSuspendthread(int argc, char* argv[])
 {
+    if(hvmodeActive())
+    {
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        return false;
+    }
     duint threadid = fdProcessInfo->dwThreadId;
     if(argc > 1)
         if(!valfromstring(argv[1], &threadid, false))
@@ -105,6 +111,11 @@ bool cbDebugSuspendthread(int argc, char* argv[])
 
 bool cbDebugResumethread(int argc, char* argv[])
 {
+    if(hvmodeActive())
+    {
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        return false;
+    }
     duint threadid = fdProcessInfo->dwThreadId;
     if(argc > 1)
         if(!valfromstring(argv[1], &threadid, false))
@@ -127,6 +138,11 @@ bool cbDebugResumethread(int argc, char* argv[])
 
 bool cbDebugKillthread(int argc, char* argv[])
 {
+    if(hvmodeActive())
+    {
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        return false;
+    }
     duint threadid = fdProcessInfo->dwThreadId;
     if(argc > 1)
         if(!valfromstring(argv[1], &threadid, false))
@@ -153,6 +169,11 @@ bool cbDebugKillthread(int argc, char* argv[])
 
 bool cbDebugSuspendAllThreads(int argc, char* argv[])
 {
+    if(hvmodeActive())
+    {
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        return false;
+    }
     dprintf(QT_TRANSLATE_NOOP("DBG", "%d/%d thread(s) suspended\n"), ThreadSuspendAll(), ThreadGetCount());
 
     GuiUpdateAllViews();
@@ -161,6 +182,11 @@ bool cbDebugSuspendAllThreads(int argc, char* argv[])
 
 bool cbDebugResumeAllThreads(int argc, char* argv[])
 {
+    if(hvmodeActive())
+    {
+        dputs_untranslated("HV Mode: threads of the target are never suspended, resumed or killed (each changes state the target can see). A thread stops only at a breakpoint. Leave HV Mode (hvmode off, when not debugging) to do this.");
+        return false;
+    }
     dprintf(QT_TRANSLATE_NOOP("DBG", "%d/%d thread(s) resumed\n"), ThreadResumeAll(), ThreadGetCount());
 
     GuiUpdateAllViews();

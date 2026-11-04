@@ -30,6 +30,8 @@
 #include "formatfunctions.h"
 #include "stringformat.h"
 #include "dbghelp_safe.h"
+#include "hvmode.h"
+#include "hvtrace.h"
 #include <shellapi.h>
 #include <shlwapi.h>
 #include <fstream>
@@ -151,6 +153,9 @@ static void registercommands()
     dbgcmdnew("erun,egun,er,eg", cbDebugErun, true); //run + skip first chance exceptions
     dbgcmdnew("serun,sego", cbDebugSerun, true); //run + swallow exception
     dbgcmdnew("pause", cbDebugPause, false); //pause debugger
+    dbgcmdnew("hvmode", cbHvMode, false); //HV Mode: debug through the hypervisor [on|off]
+    dbgcmdnew("HvTrace,hvtrace", cbHvTrace, true); //HV Mode: the hypervisor's native trace [address[, count[, stepover]]] -> the Trace tab
+    dbgcmdnew("HvTraceStop,hvtracestop", cbHvTraceStop, true); //HV Mode: end the native trace, keep what it recorded
     dbgcmdnew("DebugContinue,con", cbDebugContinue, true); //set continue status
     dbgcmdnew("StepInto,sti,SingleStep,sstep,sst", cbDebugStepInto, true); //StepInto
     dbgcmdnew("eStepInto,esti", cbDebugeStepInto, true); //StepInto + skip first chance exceptions
@@ -837,6 +842,10 @@ static const char* applyCommandlineArguments(const CommandlineArguments & args)
 
 extern "C" DLL_EXPORT const char* _dbg_dbginit(bool blocking)
 {
+    // HV Mode picks the debug engine, so it must run before the first engine call below
+    if(const char* hvError = hvmodeInit())
+        return hvError;
+
     if(!EngineCheckStructAlignment(UE_STRUCT_TITAN_ENGINE_CONTEXT, sizeof(TITAN_ENGINE_CONTEXT_t)))
         return "Invalid TITAN_ENGINE_CONTEXT_t alignment!";
 

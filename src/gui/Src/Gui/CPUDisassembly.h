@@ -94,6 +94,9 @@ public slots:
     void traceCoverageResetSlot();
     void traceCoverageDisableSlot();
     void traceCoverageToggleTraceRecordingSlot();
+    void hvTraceIntoSlot();       // HV Mode: the hypervisor's native trace from the selection (HvTrace)
+    void hvTraceOverSlot();
+    void hvTraceStopSlot();
     void displayWarningSlot(QString title, QString text);
     void labelHelpSlot();
     void analyzeSingleFunctionSlot();

@@ -125,6 +125,8 @@ private-include-directories = [
 ]
 msvc.link-options = [
     "/DELAYLOAD:TitanEngine.dll",
+    # HV Mode (src/dbg/hvmode.cpp) swaps the engine at runtime: stock TitanEngine.dll <-> TitanTuring.dll
+    "/DELAY:UNLOAD",
 ]
 msvc.link-libraries = [
     "Delayimp",
@@ -133,6 +135,31 @@ msvc.link-libraries = [
 [target.dbg.properties]
 x86.OUTPUT_NAME = "x32dbg"
 x64.OUTPUT_NAME = "x64dbg"
+
+# TitanTuring.dll: the HV Mode engine -- debugs through the turing-hv hypervisor (src/dbg/TitanTuring/README.md)
+[target.TitanTuring]
+type = "shared"
+condition = "x64"
+sources = [
+    "src/dbg/TitanTuring/TitanTuring.cpp",
+    "src/dbg/TitanTuring/thvclient.cpp",
+    "src/dbg/TitanTuring/hvguard.cpp",
+    "src/dbg/TitanTuring/shim.cpp",
+    "src/dbg/TitanTuring/*.h",
+    "src/dbg/TitanTuring/vendor/*.h",
+]
+private-compile-definitions = [
+    "TITANTURING_BUILD",
+    "UNICODE",
+    "_UNICODE",
+    "NOMINMAX",
+]
+private-link-libraries = [
+    "Psapi",
+    "user32",
+    "advapi32",
+    "::zydis_wrapper",   # a step's landing (cross-page steps by a temporary breakpoint)
+]
 
 [target.gui]
 type = "shared"
@@ -224,6 +251,7 @@ dependencies = [
     "third_party",
 ]
 x86.dependencies = ["launcher"]
+x64.dependencies = ["TitanTuring"]
 
 [target.exe.properties]
 x86.OUTPUT_NAME = "x32dbg"
