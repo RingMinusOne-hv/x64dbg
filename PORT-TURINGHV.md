@@ -237,6 +237,17 @@ mostly LOOKED held and why the thread came round "as a new hold at the same addr
 cross-core time difference; a hosted test reproduces the race and fails on the rev150e source. `bp_live q<ms>` (under
 10 s) is in RUN-ALL. Still no TitanTuring change needed.
 
+## Pause = the hypervisor's freeze (rev151b, 2026-11-04; rev151 let the target run for moments between two exits)
+
+**Pause** in HV Mode freezes the whole target in the hypervisor: every user thread is held where it next tries to run
+its own code (no handle, no suspend count, no injected thread -- nothing the target can see; each held thread keeps a
+core busy while frozen). x64dbg shows the target paused on its main thread (its snapshot, or its kernel trap frame if it
+was waiting); every other thread's registers come from its own snapshot, with the full **YMM** registers (AVX) when the
+target uses AVX (also at breakpoints). **Run** thaws it. A step from the pause is refused (only a thread held at a
+breakpoint steps). The engine reads the freeze every 2 s; if x64dbg dies, the hypervisor thaws the target after 10 s. On
+an image before rev151 Pause needs "allow visible Windows actions" (below). Test: `tests/x64dbg_hvwindows.py`
+(version-aware) and bp_live `z5000` (the target's writes stop, Windows shows no thread suspended).
+
 ## Allow visible Windows actions (2026-11-04): `hvwindows`, off by default
 
 What the hypervisor can't do invisibly is refused in HV Mode. **Options > "HV Mode: allow visible Windows actions"**

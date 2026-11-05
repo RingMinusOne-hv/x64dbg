@@ -414,8 +414,8 @@ bool dbgspawnbreakinthread()
 // one of its threads; cbException's break-in branch takes that as the pause (and blocks until Run, which resumes it).
 bool dbgpausethroughwindows()
 {
-    if(bBreakInExpected.exchange(true))
-        return true;
+    // rev151: issued again on every Pause (an earlier request the engine could not serve must not wedge this one)
+    bBreakInExpected = true;
     DWORD tid = 0;
     if(!hvmodePauseChoose(&tid))
     {

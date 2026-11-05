@@ -581,6 +581,43 @@ uint32_t ThvClient::BreakCmd(uint32_t id, const thv_break_cmd& c, thv_dwatch_sta
     return r;
 }
 
+uint32_t ThvClient::FreezeSet(uint64_t cr3, uint64_t userCr3, thv_freeze_status* st)
+{
+    SlotGuard g(*this);
+    if(g.i < 0) return THVB_E_NO_BRIDGE;
+    const uint32_t r = Exec(g.i, THVB_CMD_FREEZE_SET, {cr3, userCr3});
+    if(st && Completed(g.i)) memcpy(st, SlotData(g.i), sizeof(*st));
+    return r;
+}
+
+uint32_t ThvClient::FreezeRead(uint32_t index, thv_capture_rec* rec, thv_freeze_status* st)
+{
+    SlotGuard g(*this);
+    if(g.i < 0) return THVB_E_NO_BRIDGE;
+    const uint32_t r = Exec(g.i, THVB_CMD_FREEZE_READ, {index});
+    if(!Completed(g.i)) return r;
+    thv_freeze_status s;
+    memcpy(&s, SlotData(g.i), sizeof(s));
+    if(st) *st = s;
+    if(rec)
+    {
+        if(r == THV_OK && index < s.threads && mData >= THVB_ARRAY_OFF + sizeof(thv_capture_rec))
+            memcpy(rec, SlotData(g.i) + THVB_ARRAY_OFF, sizeof(*rec));
+        else
+            memset(rec, 0, sizeof(*rec));
+    }
+    return r;
+}
+
+uint32_t ThvClient::FreezeClear(thv_freeze_status* st)
+{
+    SlotGuard g(*this);
+    if(g.i < 0) return THVB_E_NO_BRIDGE;
+    const uint32_t r = Exec(g.i, THVB_CMD_FREEZE_CLEAR, {});
+    if(st && Completed(g.i)) memcpy(st, SlotData(g.i), sizeof(*st));
+    return r;
+}
+
 uint32_t ThvClient::CaptureArm(uint64_t cr3, uint64_t address, uint32_t length, const thv_dwatch_operand* op,
                                const thv_capture_cfg& cfg, uint32_t* id, thv_dwatch_status* st)
 {

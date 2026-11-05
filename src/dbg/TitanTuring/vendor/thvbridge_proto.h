@@ -145,8 +145,14 @@ enum thvb_cmd {
     /* turing-hv rev150 (SDK 1.13): the native trace -- follow a thread instruction by instruction, it never stops */
     THVB_CMD_DWATCH_ARM_TRACE   = 43,   /* arg0 cr3, arg1 instruction, arg2 length, arg3 max records (0 = 1000),
                                            arg4 flags (THV_TRF_OVER or 0); out: thv_dwatch_status; ret0 id          */
-    THVB_CMD_DWATCH_TR_READ     = 44    /* arg0 id, arg1 first, arg2 max; out: thv_dwatch_status @0, thv_trace_info
+    THVB_CMD_DWATCH_TR_READ     = 44,   /* arg0 id, arg1 first, arg2 max; out: thv_dwatch_status @0, thv_trace_info
                                            @THVB_TRACE_INFO_OFF, thv_trace_rec[] @ARRAY_OFF; ret0 records copied     */
+    /* turing-hv rev151 (SDK 1.14): the freeze -- every user thread of one process held, invisibly. Never the broker's
+       own process or the one that started it (Cheat Engine / x64dbg would freeze itself) */
+    THVB_CMD_FREEZE_SET         = 45,   /* arg0 cr3, arg1 user cr3 (0 = none); out: thv_freeze_status                 */
+    THVB_CMD_FREEZE_READ        = 46,   /* arg0 index; out: thv_freeze_status @0, thv_capture_rec @ARRAY_OFF;
+                                           ret0 threads (keeps the freeze alive)                                    */
+    THVB_CMD_FREEZE_CLEAR       = 47    /* out: thv_freeze_status                                                    */
 };
 #define THVB_TRACE_INFO_OFF 128u        /* THVB_CMD_DWATCH_TR_READ: where thv_trace_info sits in data[] */
 

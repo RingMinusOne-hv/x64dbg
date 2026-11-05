@@ -362,7 +362,7 @@ bool hvmodeAllowWindows()
 
 bool hvmodePauseChoose(DWORD* tid)
 {
-    if(!hvmodeAllowWindows() || !pPauseChoose || !tid)
+    if(!gActive || !pPauseChoose || !tid)
         return false;
     *tid = pPauseChoose();
     return *tid != 0;
@@ -370,7 +370,7 @@ bool hvmodePauseChoose(DWORD* tid)
 
 bool hvmodePauseRequest(DWORD tid)
 {
-    return hvmodeAllowWindows() && pPauseRequest && pPauseRequest(tid);
+    return gActive && pPauseRequest && pPauseRequest(tid);   // rev151: the freeze, or (allowed) Windows
 }
 
 bool cbHvWindows(int argc, char* argv[])

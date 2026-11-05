@@ -52,9 +52,10 @@ TT_API int TT_RouteModule(HMODULE m);                   // route one more module
 // handle opened for that one call (the target can see the handle and the action). Each is logged (TT_WINDOWS_ACTION).
 TT_API void TT_SetAllowWindows(bool on);
 TT_API bool TT_AllowWindows();
-// Pause through Windows (allowed only): the thread the pause will be reported on (the main thread; 0 = none), then
-// the request -- the engine suspends the process (NtSuspendProcess) and reports EXCEPTION_BREAKPOINT on `tid`; when
-// x64dbg's handler returns (Run), it resumes the process. Registers come from Windows while paused.
+// Pause: the thread the pause will be reported on (the main thread; 0 = none), then the request -- rev151: the
+// hypervisor's FREEZE holds every user thread invisibly (registers from each thread's snapshot); an image before
+// rev151 and the switch on: the engine suspends the process through Windows (NtSuspendProcess) instead. Either way it
+// reports EXCEPTION_BREAKPOINT on `tid` and, when x64dbg's handler returns (Run), lets the process go.
 TT_API DWORD TT_PauseChooseThread();
 TT_API bool TT_PauseRequest(DWORD tid);
 TT_API bool TT_PausedByWindows();

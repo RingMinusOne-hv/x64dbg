@@ -66,6 +66,10 @@ public:
     uint32_t BreakCmd(uint32_t id, const thv_break_cmd& c, thv_dwatch_status* st);
     uint32_t CaptureArm(uint64_t cr3, uint64_t address, uint32_t length, const thv_dwatch_operand* op, const thv_capture_cfg& cfg, uint32_t* id, thv_dwatch_status* st);
     uint32_t CapRead(uint32_t id, uint32_t index, thv_capture_rec* rec, thv_dwatch_status* st);
+    // rev151: the freeze -- every user thread of one process held, invisibly (read at least every 10 s or it thaws)
+    uint32_t FreezeSet(uint64_t cr3, uint64_t userCr3, thv_freeze_status* st);
+    uint32_t FreezeRead(uint32_t index, thv_capture_rec* rec, thv_freeze_status* st);
+    uint32_t FreezeClear(thv_freeze_status* st);
     // rev150: the native trace -- the first thread to reach `address` is followed instruction by instruction, never stopped
     uint32_t TraceArm(uint64_t cr3, uint64_t address, uint32_t length, uint32_t maxRecords, uint32_t flags, uint32_t* id, thv_dwatch_status* st);
     // records [first, first + out.size()) (at most `max`); *info = its state; st->entries = records taken so far

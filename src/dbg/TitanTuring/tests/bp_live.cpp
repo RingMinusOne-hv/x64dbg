@@ -9,6 +9,9 @@
 //         sampled every 10 ms instead -- a held thread spins on its fault (running / ready), one that got away sleeps
 //         (waiting, DelayExecution). Fails if it is ever seen waiting. Keep <ms> under 10000: a watch nobody reads
 //         for HVDW_ABANDON_S (10 s) is abandoned by design.
+//         z<ms> = rev151 THE FREEZE: the parked thread let go and the breakpoint cleared, then the whole process frozen
+//         by the hypervisor for <ms> (read every second: it thaws itself unread for 10 s) -- the target's own g_secret
+//         (written constantly) must stop and Windows must show no thread suspended; thawed, g_secret moves again.
 //         Default "s,s,o,r30,c".
 // Each command must land within 3 s: a new hold (status.entries changes; the record's own seq is the capture's).
 // Exit 0 = every command landed where it should.
@@ -134,14 +137,16 @@ int wmain(int argc, wchar_t** argv)
     if(!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) { printf("target start failed\n"); return 1; }
     CloseHandle(wr);
     std::string out;
-    uint64_t hot = 0;
-    for(DWORD t0 = GetTickCount(); !hot && GetTickCount() - t0 < 10000;)
+    uint64_t hot = 0, secret = 0;
+    for(DWORD t0 = GetTickCount(); (!hot || !secret) && GetTickCount() - t0 < 10000;)   // the line may come in two reads
     {
         char buf[512]; DWORD n = 0;
         if(!ReadFile(rd, buf, sizeof(buf) - 1, &n, nullptr) || !n) break;
         buf[n] = 0; out += buf;
         size_t p = out.find("hot_target=");
         if(p != std::string::npos && out.find(' ', p) != std::string::npos) hot = _strtoui64(out.c_str() + p + 11, nullptr, 16);
+        size_t q = out.find("g_secret=");
+        if(q != std::string::npos && out.find(' ', q) != std::string::npos) secret = _strtoui64(out.c_str() + q + 9, nullptr, 16);
     }
     if(!hot) { printf("no bait line\n"); TerminateProcess(pi.hProcess, 0); return 1; }
 
@@ -237,6 +242,70 @@ int wmain(int argc, wchar_t** argv)
                     printf("FAIL: the held thread ran free with nothing re-arming (%u waiting samples, hold %u -> %u)\n", waiting, seq1, st.entries);
                     fails++;
                 }
+                continue;
+            }
+            case 'z':
+            {
+                const DWORD ms = DWORD(atoi(op.c_str() + 1));
+                auto val = [&]() -> uint64_t { uint64_t v = 0; size_t got = 0; c.Read(info.dirbase, secret, &v, 8, &got); return got == 8 ? v : ~0ull; };
+                thv_break_cmd go = {};
+                go.tid = tid; go.cmd = THV_BKC_CONTINUE;
+                c.BreakCmd(id, go, &st);
+                c.DwatchClear(id, &st);
+                Sleep(300);
+                const uint64_t r0 = val(); Sleep(300); const uint64_t r1 = val();
+                thv_freeze_status fs = {};
+                const uint32_t fr = c.FreezeSet(info.dirbase, 0, &fs);
+                printf("  freeze   r=%08x active=%u supported=%u (g_secret %llx -> %llx while running)\n", fr, fs.active, fs.supported,
+                       (unsigned long long)r0, (unsigned long long)r1);
+                if(fr != THV_OK) { printf("FAIL: the freeze was refused\n"); fails++; continue; }
+                Sleep(500);
+                const uint64_t f0 = val();
+                unsigned suspended = 0, samples = 0;
+                const DWORD t0 = GetTickCount();
+                for(DWORD n = 0; GetTickCount() - t0 < ms; n++)
+                {
+                    Sleep(50);
+                    if(n % 20 == 19) c.FreezeRead(0xFFFFu, nullptr, &fs);      // keep it alive
+                    // no thread of the target may be suspended the Windows way (wait reason 5 = Suspended)
+                    static NtQSI_t q = reinterpret_cast<NtQSI_t>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
+                    static std::vector<uint8_t> buf(1 << 22);
+                    ULONG ret = 0;
+                    if(q(5, buf.data(), ULONG(buf.size()), &ret) == 0)
+                        for(size_t off = 0;;)
+                        {
+                            const uint8_t* pp = buf.data() + off;
+                            const ULONG next = *reinterpret_cast<const ULONG*>(pp);
+                            if(*reinterpret_cast<const uintptr_t*>(pp + 0x50) == pi.dwProcessId)
+                            {
+                                const ULONG nth = *reinterpret_cast<const ULONG*>(pp + 4);
+                                const uint8_t* th = pp + 0x100;
+                                for(ULONG i = 0; i < nth; i++, th += 0x50)
+                                    if(*reinterpret_cast<const ULONG*>(th + 0x44) == 5 && *reinterpret_cast<const ULONG*>(th + 0x48) == 5) suspended++;
+                                samples++;
+                                break;
+                            }
+                            if(!next) break;
+                            off += next;
+                        }
+                }
+                const uint64_t f1 = val();
+                thv_capture_rec rec0 = {};
+                c.FreezeRead(0, &rec0, &fs);
+                printf("  frozen   g_secret %llx -> %llx over %lu ms; threads held %u, holds %llu, vCPUs %u, switches %llu, MOV CR3 performed %llu, undecoded %llu; Windows-suspended samples %u of %u\n",
+                       (unsigned long long)f0, (unsigned long long)f1, ms, fs.threads, (unsigned long long)fs.holds, fs.vcpus,
+                       (unsigned long long)fs.switches, (unsigned long long)fs.emulated, (unsigned long long)fs.undecoded, suspended, samples);
+                if(fs.threads) printf("  thread 0 tid %llu rip %llx rsp %llx flags %x%s\n", (unsigned long long)rec0.tid, (unsigned long long)rec0.rip,
+                                      (unsigned long long)rec0.rsp, rec0.flags, (rec0.flags & THV_CAPF_AVX) ? " (AVX)" : "");
+                c.FreezeClear(&fs);
+                Sleep(500);
+                const uint64_t a0 = val(); Sleep(500); const uint64_t a1 = val();
+                printf("  thawed   g_secret %llx -> %llx, active=%u\n", (unsigned long long)a0, (unsigned long long)a1, fs.active);
+                if(r0 == r1) { printf("FAIL: the target was not running before the freeze\n"); fails++; }
+                if(f0 != f1 || f0 == ~0ull) { printf("FAIL: the target ran while frozen\n"); fails++; }
+                if(suspended) { printf("FAIL: Windows showed a suspended thread (the freeze must be invisible)\n"); fails++; }
+                if(!fs.threads && false) {}
+                if(a0 == a1) { printf("FAIL: the target did not run again after the thaw\n"); fails++; }
                 continue;
             }
             default: printf("bad op %s\n", op.c_str()); continue;

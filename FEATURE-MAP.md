@@ -37,7 +37,7 @@ code (designed below) · **[limited]** works with a documented restriction · **
 | Step into / over / out | rev149 concealed TF step; step-over = return trap; step-out = return trap on the caller's return | **[have]** (holds within the bp's page; off-page runs to the next bp) |
 | Run to selection | rev149 RUNTO | **[have]** |
 | Pause one thread | parking breakpoint (rev149) | **[have]** |
-| Pause the whole process | **mass-park**: park every user thread at once | **[new-HV]** gap 3 (below); 2026-11-04: through Windows when "allow visible Windows actions" is on |
+| Pause the whole process | **mass-park**: park every user thread at once | **[have]** rev151: the hypervisor's freeze (invisible); through Windows only on an older image with "allow visible Windows actions" |
 
 ## 3. Breakpoints
 
@@ -76,7 +76,7 @@ code (designed below) · **[limited]** works with a documented restriction · **
 |---|---|---|
 | View/edit GPRs, RIP, RFLAGS, segments of the stopped thread | capture snapshot (read) + rev149 SETREG/SETRIP (write) | **[have]** |
 | x87 / SSE (XMM, MXCSR) | the snapshot's FXSAVE | **[have]** |
-| AVX / AVX-512 (YMM/ZMM) | snapshot does XMM only today | **[new-HV]** gap 5 (XSAVE path) |
+| AVX / AVX-512 (YMM/ZMM) | snapshot does XMM only today | **[have]** rev151: YMM's upper halves XSAVEd in every snapshot; ZMM (AVX-512) not (the board's CPU has none) |
 | Debug registers (DR0-7) view | we never use DRx; shown as not-applicable / zero | **[engine]** |
 | Registers of a thread that is NOT stopped | read its switched-out kernel trap frame | **[have]** (2026-11-03, trapContext; full from Windows with "allow visible Windows actions") |
 

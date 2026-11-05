@@ -421,19 +421,15 @@ bool cbDebugPause(int argc, char* argv[])
     if(hvmodeActive())
     {
         // stock pause suspends a thread, plants an int3, posts WM_NULL and may inject a break-in thread: all visible.
-        // 2026-11-04: with "allow visible Windows actions" on, the game is frozen through Windows instead
-        if(hvmodeAllowWindows())
+        // rev151: the hypervisor's FREEZE holds every thread of the target, invisibly; an image before rev151 needs
+        // "allow visible Windows actions" (the game is frozen through Windows instead)
+        if(dbgpausethroughwindows())
         {
-            if(dbgpausethroughwindows())
-            {
-                dputs_untranslated("HV Mode: freezing the target through Windows (allowed; the target can see this)...");
-                return true;
-            }
-            dputs_untranslated("HV Mode: the pause through Windows could not start (no thread to report it on yet).");
-            return false;
+            dputs_untranslated("HV Mode: pausing -- the hypervisor freezes every thread of the target (nothing the target can see)...");
+            return true;
         }
-        dputs_untranslated("HV Mode: Pause freezes the target through Windows, which it can see -- turn on \"allow visible Windows actions\" "
-                           "(Options menu, or the command hvwindows on) to use it. Or set a breakpoint where you want to stop.");
+        dputs_untranslated("HV Mode: Pause needs turing-hv rev151's freeze, or \"allow visible Windows actions\" (Options menu, or "
+                           "hvwindows on: the target is frozen through Windows, which it can see). Or set a breakpoint.");
         return false;
     }
     // If the previous pause request could not break the debuggee and no debug

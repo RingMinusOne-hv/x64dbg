@@ -748,6 +748,13 @@ namespace
             const int nx = int(sizeof(c->XmmRegisters) / sizeof(c->XmmRegisters[0]));
             for(int i = 0; i < nx && i < 16; i++)
                 memcpy(&c->XmmRegisters[i], &r.xmm[i * 16], 16);
+            // rev151: AVX -- YMM = XMM (low) + the snapshot's upper halves (high)
+            const int ny = int(sizeof(c->YmmRegisters) / sizeof(c->YmmRegisters[0]));
+            for(int i = 0; i < ny && i < 16; i++)
+            {
+                memcpy(&c->YmmRegisters[i].Low, &r.xmm[i * 16], 16);
+                if(r.flags & THV_CAPF_AVX) memcpy(&c->YmmRegisters[i].High, &r.ymm_hi[i * 16], 16);
+            }
         }
     }
 
@@ -794,8 +801,36 @@ namespace
 {
     std::atomic<bool> g_allowWindows{false};
     std::atomic<DWORD> g_pauseReq{0};
-    bool g_paused = false;                      // frozen through Windows, reported to x64dbg as a pause (g_lock)
+    bool g_paused = false;                      // frozen, reported to x64dbg as a pause (g_lock)
     DWORD g_pauseTid = 0;
+    int g_pauseKind = 0;                        // rev151: 1 = the hypervisor's freeze (invisible), 2 = through Windows
+    std::atomic<bool> g_fzKeep{false};
+
+    // rev151: a frozen thread's snapshot (taken at its first hold)
+    bool fzSnapshot(DWORD tid, thv_capture_rec& out)
+    {
+        thv_freeze_status fs = {};
+        for(uint32_t i = 0; i < THV_FZ_THREADS; i++)
+        {
+            if(g_thv.FreezeRead(i, &out, &fs) != THV_OK || i >= fs.threads) return false;
+            if(DWORD(out.tid) == tid) return true;
+        }
+        return false;
+    }
+    DWORD WINAPI fzKeeper(LPVOID)
+    {
+        // the hypervisor thaws a freeze nobody reads for 10 s: read it every 2 s while paused
+        for(int n = 0; g_fzKeep.load(); n++)
+        {
+            Sleep(100);
+            if(n % 20 == 19)
+            {
+                thv_freeze_status fs;
+                g_thv.FreezeRead(0xFFFFu, nullptr, &fs);
+            }
+        }
+        return 0;
+    }
 
     bool winContext(DWORD tid, CONTEXT& c)
     {
@@ -834,11 +869,61 @@ namespace
     }
 
     // a thread's registers come from Windows: every thread while frozen through Windows; with the switch on, every
-    // thread not held at a hypervisor breakpoint (x64dbg suspends one -- through Windows, allowed -- before it reads)
+    // thread not held at a hypervisor breakpoint (x64dbg suspends one -- through Windows, allowed -- before it reads).
+    // rev151: never while the hypervisor's freeze holds them (their snapshots answer)
     bool useWindowsCtx(HANDLE h)
     {
         if(!isThreadPH(h)) return false;
+        if(g_paused && g_pauseKind == 1) return false;
         return g_paused || (g_allowWindows.load() && !isStopped(h));
+    }
+
+    // rev151: PAUSE BY THE HYPERVISOR'S FREEZE -- every user thread of the target held, invisibly (no handle, no
+    // suspend count, nothing in the game changes). Reported on `tid` (the thread x64dbg expects the pause on): its
+    // snapshot when it was held trying to run, else its kernel trap frame (a waiting thread). Run thaws it.
+    bool pauseThroughFreeze(DWORD tid)
+    {
+        thv_freeze_status fs = {};
+        if(g_thv.FreezeSet(g_t.cr3, 0, &fs) != THV_OK) return false;   // an image / bridge before rev151
+        thv_capture_rec rec = {};
+        bool have = false;
+        for(int k = 0; k < 25 && !have; k++)        // up to half a second for the thread's first hold
+        {
+            Sleep(20);
+            have = fzSnapshot(tid, rec);
+        }
+        uint64_t rip = have ? rec.rip : 0;
+        if(!have)
+        {
+            TrapCtx t;
+            if(trapContext(tid, t)) rip = t.rip;
+        }
+        g_fzKeep.store(true);
+        HANDLE keeper = CreateThread(nullptr, 0, fzKeeper, nullptr, 0, nullptr);
+        {
+            std::lock_guard<std::recursive_mutex> g(g_lock);
+            g_paused = true;
+            g_pauseKind = 1;
+            g_pauseTid = tid;
+            setEvent(EXCEPTION_DEBUG_EVENT, tid);
+            g_ev.u.Exception.dwFirstChance = TRUE;
+            g_ev.u.Exception.ExceptionRecord.ExceptionCode = EXCEPTION_BREAKPOINT;
+            g_ev.u.Exception.ExceptionRecord.ExceptionAddress = reinterpret_cast<PVOID>(uintptr_t(rip));
+        }
+        fire(UE_CH_UNHANDLEDEXCEPTION, &g_ev.u.Exception);   // x64dbg: "paused!" -- blocks until Run
+        g_fzKeep.store(false);
+        if(keeper) { WaitForSingleObject(keeper, 5000); CloseHandle(keeper); }
+        g_thv.FreezeClear(&fs);
+        std::lock_guard<std::recursive_mutex> g(g_lock);
+        g_paused = false;
+        g_pauseKind = 0;
+        g_pauseTid = 0;
+        return true;
+    }
+    bool freezeAvailable()
+    {
+        thv_freeze_status fs = {};
+        return g_thv.FreezeRead(0xFFFFu, nullptr, &fs) == THV_OK && fs.supported;
     }
 
     // Pause, frozen through Windows. x64dbg's handler (cbException, the break-in branch) blocks until Run.
@@ -860,6 +945,7 @@ namespace
         {
             std::lock_guard<std::recursive_mutex> g(g_lock);
             g_paused = true;
+            g_pauseKind = 2;
             g_pauseTid = tid;
             setEvent(EXCEPTION_DEBUG_EVENT, tid);
             g_ev.u.Exception.dwFirstChance = TRUE;
@@ -870,6 +956,7 @@ namespace
         {
             std::lock_guard<std::recursive_mutex> g(g_lock);
             g_paused = false;
+            g_pauseKind = 0;
             g_pauseTid = 0;
         }
         ntResume(p);
@@ -1031,6 +1118,11 @@ __declspec(dllexport) bool GetFullContextDataEx(HANDLE hActiveThread, TITAN_ENGI
         if(winContext(threadOf(hActiveThread), w)) { ctxFromWin(w, titcontext); return true; }
         if(g_paused) { memset(titcontext, 0, sizeof(*titcontext)); return false; }
     }
+    if(g_paused && g_pauseKind == 1 && isThreadPH(hActiveThread))
+    {
+        thv_capture_rec rec;                       // rev151: a thread the freeze holds -- its snapshot
+        if(fzSnapshot(threadOf(hActiveThread), rec)) { ctxFromSnapshot(rec, titcontext); return true; }
+    }
     if(!isStopped(hActiveThread))
     {
         TrapCtx t;
@@ -1049,6 +1141,7 @@ __declspec(dllexport) bool GetFullContextDataEx(HANDLE hActiveThread, TITAN_ENGI
 __declspec(dllexport) bool SetFullContextDataEx(HANDLE hActiveThread, TITAN_ENGINE_CONTEXT_t* titcontext)
 {
     std::lock_guard<std::recursive_mutex> g(g_lock);
+    if(g_paused && g_pauseKind == 1) return false;   // rev151: held by the freeze -- no register path yet
     if(titcontext && g_paused && isThreadPH(hActiveThread))
     {
         // frozen through Windows: the general registers, RIP and the flags go back through Windows
@@ -1095,6 +1188,27 @@ __declspec(dllexport) bool SetFullContextDataEx(HANDLE hActiveThread, TITAN_ENGI
 __declspec(dllexport) ULONG_PTR GetContextDataEx(HANDLE hActiveThread, TitanRegister IndexOfRegister)
 {
     std::lock_guard<std::recursive_mutex> g(g_lock);
+    if(g_paused && g_pauseKind == 1 && isThreadPH(hActiveThread))
+    {
+        thv_capture_rec rec;                       // rev151: a thread the freeze holds -- its snapshot
+        if(fzSnapshot(threadOf(hActiveThread), rec))
+        {
+            const int fi = gprOf(IndexOfRegister);
+            if(fi >= 0) return ULONG_PTR(rec.gpr[fi]);
+            switch(IndexOfRegister)
+            {
+            case UE_EIP: case UE_RIP: case UE_CIP: return ULONG_PTR(rec.rip);
+            case UE_EFLAGS: case UE_RFLAGS: return ULONG_PTR(rec.rflags);
+            case UE_SEG_GS: return rec.gs.sel;
+            case UE_SEG_FS: return rec.fs.sel;
+            case UE_SEG_ES: return rec.es.sel;
+            case UE_SEG_DS: return rec.ds.sel;
+            case UE_SEG_CS: return rec.cs.sel;
+            case UE_SEG_SS: return rec.ss.sel;
+            default: return 0;
+            }
+        }
+    }
     if(useWindowsCtx(hActiveThread))
     {
         CONTEXT w;
@@ -1155,6 +1269,7 @@ __declspec(dllexport) ULONG_PTR GetContextDataEx(HANDLE hActiveThread, TitanRegi
 __declspec(dllexport) bool SetContextDataEx(HANDLE hActiveThread, TitanRegister IndexOfRegister, ULONG_PTR NewRegisterValue)
 {
     std::lock_guard<std::recursive_mutex> g(g_lock);
+    if(g_paused && g_pauseKind == 1) return false;   // rev151: held by the freeze -- no register path yet
     if(g_paused && isThreadPH(hActiveThread))
     {
         CONTEXT w;
@@ -1183,7 +1298,7 @@ __declspec(dllexport) bool SetContextDataEx(HANDLE hActiveThread, TitanRegister 
 
 __declspec(dllexport) bool GetAVXContext(HANDLE hActiveThread, TITAN_ENGINE_CONTEXT_t* titcontext)
 {
-    return GetFullContextDataEx(hActiveThread, titcontext);   // YMM upper halves: gap 5 (zero)
+    return GetFullContextDataEx(hActiveThread, titcontext);   // rev151: YMM's upper halves from the snapshot (THV_CAPF_AVX)
 }
 __declspec(dllexport) bool SetAVXContext(HANDLE, TITAN_ENGINE_CONTEXT_t*) { return false; }
 __declspec(dllexport) bool GetAVX512Context(HANDLE, TITAN_ENGINE_CONTEXT_AVX512_t* titcontext)
@@ -1236,7 +1351,7 @@ static void issueStep(TITANCBSTEP cb, uint32_t cmd)
     if(g_paused)
     {
         hvguard::Record(TT_REFUSE_SHIM, g_t.pid, g_pauseTid, 0, 0,
-                        "step from a Windows pause (only a thread held at a breakpoint steps; Run continues)");
+                        "step from a pause (only a thread held at a breakpoint steps; Run continues)");
         return;
     }
     if(!g_ctxValid || !g_stoppedHv) return;    // no stopped thread to step
@@ -1360,7 +1475,9 @@ __declspec(dllexport) void DebugLoop()
         }
         if(const DWORD ptid = g_pauseReq.exchange(0))
         {
-            if(g_allowWindows.load()) pauseThroughWindows(ptid);   // blocks until x64dbg's Run
+            // rev151: the hypervisor's freeze (invisible) first; through Windows only when allowed and the freeze is not
+            // there (an image before rev151). Each blocks until x64dbg's Run.
+            if(!pauseThroughFreeze(ptid) && g_allowWindows.load()) pauseThroughWindows(ptid);
             if(g_stop) break;
             continue;
         }
@@ -1545,7 +1662,7 @@ __declspec(dllexport) bool TT_AllowWindows() { return g_allowWindows.load(); }
 __declspec(dllexport) bool TT_PausedByWindows() { std::lock_guard<std::recursive_mutex> g(g_lock); return g_paused; }
 __declspec(dllexport) DWORD TT_PauseChooseThread()
 {
-    if(!g_allowWindows.load() || !g_t.attached) return 0;
+    if(!g_t.attached) return 0;
     TT_THREAD th[64];
     DWORD n = 0;
     if(!TT_TargetThreads(th, 64, &n) || !n) return 0;
@@ -1556,9 +1673,10 @@ __declspec(dllexport) DWORD TT_PauseChooseThread()
 }
 __declspec(dllexport) bool TT_PauseRequest(DWORD tid)
 {
-    if(!g_allowWindows.load() || !tid) return false;
+    // rev151: the hypervisor's freeze when the image has it; through Windows only when allowed
+    if(!tid || (!freezeAvailable() && !g_allowWindows.load())) return false;
     DWORD zero = 0;
-    return g_pauseReq.compare_exchange_strong(zero, tid);
+    return g_pauseReq.compare_exchange_strong(zero, tid) || g_pauseReq.load() == tid;
 }
 __declspec(dllexport) bool TT_IsTargetProcess(HANDLE h) { return isProcPH(h); }
 __declspec(dllexport) bool TT_IsTargetThread(HANDLE h) { return isThreadPH(h); }

@@ -30,7 +30,7 @@
 extern "C" {
 #endif
 
-#define THV_CLIENT_API_VERSION 0x0001000Du   /* 1.1: batched transfers; 1.2: physical reads; 1.3: the caller gate;
+#define THV_CLIENT_API_VERSION 0x0001000Eu   /* 1.1: batched transfers; 1.2: physical reads; 1.3: the caller gate;
                                                 1.4: the operator's trusted programs; 1.5: trusted at once, a
                                                 connection without a session, the boot recorder's hook sites;
                                                 1.6: the write watch, enriched watch hits, recording now;
@@ -40,7 +40,8 @@ extern "C" {
                                                 1.10: "watch harder" (thv_dwatch_arm_exec2);
                                                 1.11: the capture breakpoint (thv_dwatch_arm_capture);
                                                 1.12: the parking breakpoint (thv_dwatch_arm_break);
-                                                1.13: the native trace (thv_dwatch_arm_trace) */
+                                                1.13: the native trace (thv_dwatch_arm_trace);
+                                                1.14: the freeze (thv_freeze_*), AVX in snapshots (ymm_hi) */
 #define THV_CR3_SCAN_VALIDATORS 4u
 
 /* Hypervisor statuses retain their firmware values.  Client-side failures use
@@ -568,6 +569,8 @@ THV_API uint32_t THV_CALL thv_dwatch_arm_exec2(uint64_t cr3, uint64_t address, u
 #define THV_CAPF_DEREF     2u    /* read bytes at every register that looks like a pointer                        */
 #define THV_CAPF_OPERAND   4u    /* also read at the operand address (needs an operand)                           */
 #define THV_CAPF_IDENT     8u    /* read PID / TID from the TEB (user-mode hits)                                  */
+#define THV_CAPF_AVX       16u   /* 1.14, in a record's flags only (asked for with SSE): ymm_hi holds YMM0..15's   */
+                                 /* upper halves (the guest has AVX on)                                           */
 typedef struct thv_capture_cfg {
     uint32_t max_hits;           /* captures before disarm (0 -> 1); last THV_CAP_RECS kept                       */
     uint32_t flags;              /* THV_CAPF_*                                                                    */
@@ -595,6 +598,7 @@ typedef struct thv_capture_rec {
     uint8_t  stack[THV_CAP_STACK_MAX];
     uint8_t  code[THV_CAP_CODE_MAX];
     uint8_t  deref[THV_CAP_DEREFS][THV_CAP_DEREF_MAX];
+    uint8_t  ymm_hi[256];        /* 1.14: bits 255:128 of YMM0..15, 16 bytes each (THV_CAPF_AVX in flags)          */
 } thv_capture_rec;
 /* Arm a capture breakpoint. `operand` may be NULL (only for THV_CAPF_OPERAND / rec.operand_addr); `cfg` may be NULL
  * (one capture, registers + the default stack). *id (1..4) names the watch. */
@@ -634,7 +638,14 @@ typedef struct thv_break_cmd {
 THV_API uint32_t THV_CALL thv_dwatch_arm_break(uint64_t cr3, uint64_t address, uint32_t length,
                                                const thv_dwatch_operand *operand, uint32_t *id, thv_dwatch_status *status);
 /* Read parked thread `index` (0 = most recently parked): status->count = threads parked, status->paused = THV_BKS_*
- * of this one; `rec` = its context. THV_E_NOT_FOUND if `id` is not a breakpoint. */
+ * of this one; `rec` = its context. THV_E_NOT_FOUND if `id` is not a breakpoint.
+ * rev150e: the breakpoint's diagnostics come back in the status fields a breakpoint does not otherwise use --
+ * hits = times the hypervisor armed the page again for a thread that went quiet, other = a held thread found away from
+ * its hold (an escape), elsewhere = a decision retried because the watch was busy, dropped = a fault on the page while
+ * that vCPU was already letting an instruction through, unstepped = a fault left to run (L1's, or in an event's
+ * delivery), throttled = the last escape (the vCPU it was found on | the vCPU it was last held on << 8 | the
+ * milliseconds it was away << 16). Older hypervisors report 0. One watch per 4 KiB page: arming any watch on a page another live watch holds
+ * answers THV_E_NO_SPACE (rev150e; before, the second was armed and never fired). */
 THV_API uint32_t THV_CALL thv_dwatch_break_read(uint32_t id, uint32_t index, thv_capture_rec *rec,
                                                 thv_dwatch_status *status);
 /* Command a parked thread. Takes effect the next time it faults (at once -- it is looping). */
@@ -761,6 +772,32 @@ THV_API uint32_t THV_CALL thv_slat_query(uint64_t cr3, uint64_t address, uint32_
  */
 typedef struct thv_log_info { uint64_t total, oldest, first; uint32_t capacity, reserved; } thv_log_info;
 THV_API uint32_t THV_CALL thv_log_read(uint64_t from, void *out, uint32_t max, uint32_t *got, thv_log_info *info);
+
+/*
+ * 1.14 (rev151): THE FREEZE -- pause a whole process, invisibly. Every user-mode thread of one address space is held
+ * where it next tries to run its own code (the same hold as a parking breakpoint: the core is never held, interrupts
+ * and the scheduler keep running, nothing in the guest changes; to Windows a held thread is a busy one). Kernel code
+ * keeps running. Each held thread is snapshotted at its first hold (a capture record: registers, stack, code, XMM,
+ * and YMM's upper halves when the guest has AVX on). A freeze nobody reads for 10 s thaws itself. One freeze at a
+ * time: a new set replaces it. A hypervisor older than rev151 answers THV_E_BAD_ARGUMENT / THV_E_BAD_COMMAND.
+ *   cr3      = the process's DirectoryTableBase (thv_process_info.dirbase); user_cr3 = its KVA-shadow user root, or 0
+ */
+#define THV_FZ_THREADS 32u
+typedef struct thv_freeze_status {
+    uint32_t supported, active;
+    uint32_t threads;          /* threads held at least once (snapshotted, up to THV_FZ_THREADS)                    */
+    uint32_t vcpus;            /* cores running the frozen process's copy right now                                */
+    uint64_t cr3, user_cr3;
+    uint64_t holds;            /* refused user-mode fetches (each a held thread trying again)                        */
+    uint64_t switches;         /* copy changes (into / out of the frozen process)                                    */
+    uint64_t emulated;         /* address-space switches the hypervisor performed (crossing in / out)                */
+    uint64_t undecoded;        /* switches that crossed without a decodable source (a possible escape)              */
+    uint64_t since_tsc, tsc_hz;
+} thv_freeze_status;
+THV_API uint32_t THV_CALL thv_freeze_set(uint64_t cr3, uint64_t user_cr3, thv_freeze_status *status);
+/* status, and held thread `index`'s snapshot (index < status->threads); keeps the freeze alive */
+THV_API uint32_t THV_CALL thv_freeze_read(uint32_t index, thv_capture_rec *rec, thv_freeze_status *status);
+THV_API uint32_t THV_CALL thv_freeze_clear(thv_freeze_status *status);
 
 #ifdef __cplusplus
 } /* extern "C" */
