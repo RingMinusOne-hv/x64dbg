@@ -1,3 +1,82 @@
+# x64dbg HV Mode (turing-hv)
+
+Part of **[RingMinusOne-hv](https://github.com/RingMinusOne-hv)**: tools ported onto **turing-hv**, our hypervisor.
+
+This is x64dbg (upstream [x64dbg/x64dbg](https://github.com/x64dbg/x64dbg) `development`) with a second debug engine,
+**TitanTuring**, which runs the debugger on the turing-hv hypervisor. In **HV Mode** x64dbg attaches to a running
+process with no `DebugActiveProcess`, no debug port, no `int3` byte, no debug register, and no handle on the process or
+its threads. The target reads clean to its own anti-debug checks: `BeingDebugged`, the debug port, DR7, its own code
+bytes, and the system handle table.
+
+turing-hv itself is not public. Without it, x64dbg runs as ordinary x64dbg with HV Mode off.
+
+The full write-ups:
+
+- **[PORT-TURINGHV.md](PORT-TURINGHV.md)**: the port, each piece as it was built and tested, and the build.
+- **[FEATURE-MAP.md](FEATURE-MAP.md)**: every x64dbg feature next to its hypervisor equivalent.
+- **[DETECTION.md](DETECTION.md)**: what a debugger leaves behind, and how each vector is avoided or contained.
+
+## What we did
+
+**TitanTuring: a drop-in `TitanEngine.dll`.** x64dbg's whole process-control layer is TitanEngine, about 37 functions.
+`src/dbg/TitanTuring/` implements all of them over the hypervisor, so the debugger core, analysis, symbols and the GUI
+above it barely change.
+
+| x64dbg | Windows (TitanEngine) | HV Mode (TitanTuring) |
+|---|---|---|
+| Attach | `DebugActiveProcess` | open through the hypervisor; the page-table root is validated; no debug port |
+| Read / write memory | `ReadProcessMemory` / `WriteProcessMemory` | hypervisor reads and writes; no handle |
+| Breakpoint (software or hardware execute) | `0xCC` / DR0-3 | **parking breakpoint**: the code page re-faults and only the thread that hits it is held; no byte changes |
+| Memory / hardware write and access breakpoints | guard pages / DR | the hypervisor's **data watch** |
+| Step into / over, run to cursor | trap flag | hidden single-step of the held thread. A step that leaves the page lands through a temporary breakpoint where the instruction goes (decoded with x64dbg's own Zydis) |
+| Registers, set register | `Get/SetThreadContext` | the held thread's snapshot (GPRs, x87/SSE, YMM). Other threads come from their kernel trap frames |
+| Pause | suspend + `int3` from an injected thread | the hypervisor's **freeze**: every thread held, no suspend count |
+| Run trace | trap-flag stepping | **`HvTrace`**: the hypervisor follows the thread one instruction at a time into a normal `.trace64` that opens in the Trace tab. The thread never stops |
+
+**The guard and the shim.** x64dbg's own code calls Windows directly in about 70 places, behind TitanEngine's back.
+At HV Mode entry, TitanTuring routes the import-table entries of `x64dbg.dll` and `dbghelp.dll` for about 50
+Win32/NT functions to its shim (`shim.cpp`). Pseudo-handles are answered by the hypervisor or refused. It also hooks
+`NtOpenProcess`, `NtOpenThread` and `NtGetNextProcess` inside x64dbg's own ntdll (`hvguard.cpp`). After that, no
+module in x64dbg's process can open a handle to another process: not the core, the GUI, plugins, dbghelp or Qt. Every
+refusal is logged, never silent. If the guard can't be installed, HV Mode fails closed.
+
+**Switches.**
+
+- `hvmode on|off` (setting `[Engine] HvMode`, default on) picks the engine. The title bar and the status bar always
+  show which one is running.
+- `hvwindows on|off` (default off) lets what the hypervisor can't do invisibly go through Windows instead: allocate,
+  protect, patch read-only code, suspend threads. Each such action is logged as visible to the target.
+
+**Bridge.** x64dbg can't be a trusted caller of the hypervisor: too many code pages, plugins, generated code. So
+TitanTuring speaks to the same tiny trusted broker that
+[the Cheat Engine port](https://github.com/RingMinusOne-hv/cheat-engine) uses, `thvbridge.exe`, over a shared
+section. Put a trusted `thvbridge.exe` next to `TitanTuring.dll`.
+
+## Limits (by design, or waiting on the hypervisor)
+
+- **Attach only.** You can't start a process under the debugger, and there are no entry-point or TLS breakpoints.
+- **The target's own exceptions aren't reported.** That needs a guest exception intercept in the hypervisor.
+- **One breakpoint per 4 KiB page, and at most 4 hypervisor watches at once.** The watches cover breakpoints, data
+  watches and the trace.
+
+## Build and test
+
+- **Build.** MSVC (VS 2022), CMake, and x64dbg's pinned Qt 5.12.12. The output in `bin\x64` has both `TitanEngine.dll`
+  and `TitanTuring.dll`. See PORT-TURINGHV.md, "Build toolchain".
+- **Tests.** In `src/dbg/TitanTuring/tests/`:
+  - the guard and shim, with negative controls;
+  - headless x64dbg in HV Mode;
+  - the native trace;
+  - the anti-cheat's view of the system handle table;
+  - live breakpoint and step checks, run with the anti-debug lab.
+
+  Last run on turing-hv rev150f: 16 passed, 1 skipped, 0 failed. The target reported no debugger and no integrity
+  change.
+
+---
+
+*The upstream x64dbg README follows.*
+
 # x64dbg
 
 <img width="100" src="https://github.com/x64dbg/x64dbg/raw/development/src/bug_black.png"/>
